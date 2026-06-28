@@ -1,0 +1,27 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3f8ddd"/>
+      <stop offset="1" stop-color="#205d9e"/>
+    </linearGradient>
+    <linearGradient id="photo" x1="312" y1="300" x2="712" y2="724" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e7eef7"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
+
+  <!-- photo card -->
+  <rect x="312" y="312" width="400" height="400" rx="44" fill="url(#photo)"/>
+  <circle cx="430" cy="430" r="46" fill="#f5b942"/>
+  <path d="M352 656 L468 524 L548 612 L612 540 L672 612 L672 668 L352 668 Z" fill="#276bb5"/>
+
+  <!-- crop corner marks -->
+  <g stroke="#ffffff" stroke-width="34" stroke-linecap="round" fill="none">
+    <path d="M236 330 L236 236 L330 236"/>
+    <path d="M694 236 L788 236 L788 330"/>
+    <path d="M788 694 L788 788 L694 788"/>
+    <path d="M330 788 L236 788 L236 694"/>
+  </g>
+</svg>
