@@ -2175,6 +2175,7 @@ name = "pictrim"
 version = "0.1.0"
 dependencies = [
  "libvips",
+ "pkg-config",
  "rayon",
  "serde",
  "serde_json",

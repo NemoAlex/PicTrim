@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PicTrim",
   "version": "0.1.0",
-  "identifier": "com.pictrim.app",
+  "identifier": "com.nemoalex.pictrim",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
