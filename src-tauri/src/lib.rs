@@ -1,18 +1,36 @@
 use libvips::{ops, VipsApp, VipsImage};
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "gif", "jfif",
 ];
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static VIPS_APP: OnceLock<Option<VipsApp>> = OnceLock::new();
+
+fn ensure_vips() -> Result<(), String> {
+    let app = VIPS_APP.get_or_init(|| {
+        VipsApp::new("PicTrim", false)
+            .map(|app| {
+                app.concurrency_set(1);
+                app
+            })
+            .ok()
+    });
+    if app.is_some() {
+        Ok(())
+    } else {
+        Err("libvips 初始化失败".to_string())
+    }
+}
 
 #[derive(Default)]
 struct AppState {
@@ -90,7 +108,11 @@ struct Counters {
 }
 
 #[tauri::command]
-fn start_batch(app: AppHandle, state: tauri::State<AppState>, settings: BatchSettings) -> Result<(), String> {
+fn start_batch(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    settings: BatchSettings,
+) -> Result<(), String> {
     validate_settings(&settings)?;
 
     let mut current_job = state
@@ -117,10 +139,8 @@ fn start_batch(app: AppHandle, state: tauri::State<AppState>, settings: BatchSet
             }
         }
         if cancelled {
-            let _ = app_for_thread.emit(
-                "batch-status",
-                serde_json::json!({ "status": "cancelled" }),
-            );
+            let _ =
+                app_for_thread.emit("batch-status", serde_json::json!({ "status": "cancelled" }));
         }
     });
 
@@ -165,44 +185,26 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
 
     let _ = fs::create_dir_all(&output_dir);
 
-    let vips_app = match VipsApp::new("PicTrim", false) {
-        Ok(app) => app,
-        Err(err) => {
-            emit_error(&app, format!("libvips 初始化失败: {err}"));
-            return false;
-        }
-    };
-    vips_app.concurrency_set(1);
+    if let Err(err) = ensure_vips() {
+        emit_error(&app, err);
+        return false;
+    }
 
-    emit_progress(
-        &app,
-        BatchProgress {
-            phase: "scanning".to_string(),
-            message: Some("正在扫描文件".to_string()),
-            ..BatchProgress::empty()
-        },
-    );
-
-    let items = match collect_items(&input_dir, &settings, &cancel) {
-        Ok(items) => items,
-        Err(err) => {
-            emit_error(&app, err);
-            return false;
-        }
-    };
-
-    let discovered = items.len();
     emit_progress(
         &app,
         BatchProgress {
             phase: "processing".to_string(),
-            discovered,
-            message: Some(format!("发现 {discovered} 个待处理文件")),
+            message: Some("正在扫描并处理文件".to_string()),
             ..BatchProgress::empty()
         },
     );
 
     let counters = Arc::new(Mutex::new(Counters::default()));
+    let discovered = Arc::new(AtomicUsize::new(0));
+    let check_collisions = settings.output_format != OutputFormat::Keep;
+    let collision_seen: Arc<Mutex<HashMap<PathBuf, PathBuf>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
     let pool = match ThreadPoolBuilder::new()
         .num_threads(settings.concurrency)
         .build()
@@ -214,46 +216,145 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
         }
     };
 
-    let cancelled = cancel.clone();
-    pool.install(|| {
-        items.par_iter().for_each(|item| {
-            if cancelled.load(Ordering::Relaxed) {
-                return;
+    let (tx, rx) = std::sync::mpsc::sync_channel(settings.concurrency * 4);
+
+    let cancel_producer = cancel.clone();
+    let input_dir_producer = input_dir.clone();
+    let settings_producer = settings.clone();
+    let producer = std::thread::spawn(move || {
+        for entry in WalkDir::new(&input_dir_producer)
+            .into_iter()
+            .filter_entry(|entry| {
+                if entry.depth() == 0 {
+                    return true;
+                }
+                !is_hidden_name(entry.file_name())
+            })
+        {
+            if cancel_producer.load(Ordering::Relaxed) {
+                break;
             }
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            if is_temp_output_name(entry.file_name()) {
+                continue;
+            }
+            let src = entry.path().to_path_buf();
+            let rel = match src.strip_prefix(&input_dir_producer) {
+                Ok(r) => r.to_path_buf(),
+                Err(_) => continue,
+            };
+            if rel
+                .components()
+                .any(|part| is_hidden_name(part.as_os_str()))
+            {
+                continue;
+            }
+            let is_image = is_supported_image(&src);
+            if is_image || settings_producer.copy_non_images {
+                if tx.send(WorkItem { src, rel, is_image }).is_err() {
+                    break;
+                }
+            }
+        }
+    });
 
-            let result = process_item(&input_dir, &output_dir, item, &settings);
-            let mut counters = counters.lock().expect("counter mutex poisoned");
-            apply_result(&mut counters, item, result);
+    let cancelled = cancel.clone();
+    let app_done = app.clone();
+    let counters_done = counters.clone();
+    let discovered_done = discovered.clone();
 
-            let current = item.rel.to_string_lossy().to_string();
-            let should_emit = counters.processed % 20 == 0 || counters.processed == discovered;
-            if should_emit {
-                emit_progress(
-                    &app,
-                    BatchProgress {
-                        phase: "processing".to_string(),
-                        discovered,
-                        processed: counters.processed,
-                        images: counters.images,
-                        copied: counters.copied,
-                        skipped: counters.skipped,
-                        failed: counters.failed,
-                        total_src_bytes: counters.total_src_bytes,
-                        total_dst_bytes: counters.total_dst_bytes,
-                        current: Some(current),
-                        message: None,
-                        done: false,
-                        cancelled: false,
-                    },
-                );
+    pool.install(move || {
+        rayon::scope(move |s| {
+            while let Ok(item) = rx.recv() {
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                discovered.fetch_add(1, Ordering::Relaxed);
+
+                if check_collisions {
+                    let dst = if item.is_image {
+                        output_path(
+                            &input_dir,
+                            &output_dir,
+                            &item.src,
+                            &item.rel,
+                            settings.output_format,
+                        )
+                    } else {
+                        output_dir.join(&item.rel)
+                    };
+                    let mut seen = collision_seen.lock().expect("collision map poisoned");
+                    if let Some(previous) = seen.insert(dst.clone(), item.rel.clone()) {
+                        emit_error(
+                            &app,
+                            format!(
+                                "输出路径冲突: {} 和 {} 都会写入 {}。请改用保持原格式，或调整输入文件名。",
+                                previous.to_string_lossy(),
+                                item.rel.to_string_lossy(),
+                                dst.to_string_lossy()
+                            ),
+                        );
+                        drop(seen);
+                        cancelled.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+
+                let counters = counters.clone();
+                let discovered = discovered.clone();
+                let cancelled = cancelled.clone();
+                let app = app.clone();
+                let input_dir = input_dir.clone();
+                let output_dir = output_dir.clone();
+                let settings = settings.clone();
+
+                s.spawn(move |_| {
+                    if cancelled.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let result = process_item(&input_dir, &output_dir, &item, &settings);
+                    let mut counters = counters.lock().expect("counter mutex poisoned");
+                    apply_result(&mut counters, &item, result);
+
+                    if counters.processed % 20 == 0 {
+                        emit_progress(
+                            &app,
+                            BatchProgress {
+                                phase: "processing".to_string(),
+                                discovered: discovered.load(Ordering::Relaxed),
+                                processed: counters.processed,
+                                images: counters.images,
+                                copied: counters.copied,
+                                skipped: counters.skipped,
+                                failed: counters.failed,
+                                total_src_bytes: counters.total_src_bytes,
+                                total_dst_bytes: counters.total_dst_bytes,
+                                current: Some(item.rel.to_string_lossy().to_string()),
+                                message: None,
+                                done: false,
+                                cancelled: false,
+                            },
+                        );
+                    }
+                });
             }
         });
     });
 
-    let counters = counters.lock().expect("counter mutex poisoned");
+    let _ = producer.join();
+
+    let counters = counters_done.lock().expect("counter mutex poisoned");
     let is_cancelled = cancel.load(Ordering::Relaxed);
+    let discovered = discovered_done.load(Ordering::Relaxed);
     emit_progress(
-        &app,
+        &app_done,
         BatchProgress {
             phase: "done".to_string(),
             discovered,
@@ -274,47 +375,9 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
             cancelled: is_cancelled,
         },
     );
-    let _ = app.emit("batch-failures", counters.failures.clone());
+    let _ = app_done.emit("batch-failures", counters.failures.clone());
 
     is_cancelled
-}
-
-fn collect_items(
-    input_dir: &Path,
-    settings: &BatchSettings,
-    cancel: &Arc<AtomicBool>,
-) -> Result<Vec<WorkItem>, String> {
-    let mut items = Vec::new();
-    for entry in WalkDir::new(input_dir).into_iter().filter_entry(|entry| {
-        if entry.depth() == 0 {
-            return true;
-        }
-        !is_hidden_name(entry.file_name())
-    }) {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let entry = entry.map_err(|err| err.to_string())?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let src = entry.path().to_path_buf();
-        let rel = src
-            .strip_prefix(input_dir)
-            .map_err(|err| err.to_string())?
-            .to_path_buf();
-        if rel.components().any(|part| is_hidden_name(part.as_os_str())) {
-            continue;
-        }
-
-        let is_image = is_supported_image(&src);
-        if is_image || settings.copy_non_images {
-            items.push(WorkItem { src, rel, is_image });
-        }
-    }
-    Ok(items)
 }
 
 #[derive(Debug)]
@@ -332,7 +395,13 @@ fn process_item(
     settings: &BatchSettings,
 ) -> ItemResult {
     let dst = if item.is_image {
-        output_path(input_dir, output_dir, &item.src, &item.rel, settings.output_format)
+        output_path(
+            input_dir,
+            output_dir,
+            &item.src,
+            &item.rel,
+            settings.output_format,
+        )
     } else {
         output_dir.join(&item.rel)
     };
@@ -356,6 +425,9 @@ fn process_item(
             Err(err) => ItemResult::Failed(err),
         }
     } else {
+        if same_file_path(&item.src, &dst) {
+            return ItemResult::Skipped;
+        }
         match fs::copy(&item.src, &dst) {
             Ok(dst_bytes) => {
                 let src_bytes = file_size(&item.src);
@@ -371,29 +443,38 @@ fn process_item(
 
 fn resize_image(src: &Path, dst: &Path, settings: &BatchSettings) -> Result<(u64, u64), String> {
     let src_bytes = file_size(src);
-    let mut image = VipsImage::new_from_file(src.to_string_lossy().as_ref())
-        .map_err(|err| format!("读取失败: {err}"))?;
+    let temp = temp_output_path(dst);
+    {
+        let mut image = VipsImage::new_from_file(src.to_string_lossy().as_ref())
+            .map_err(|err| format!("读取失败: {err}"))?;
 
-    let width = image.get_width();
-    let height = image.get_height();
-    let largest = width.max(height);
-    if largest > settings.max_side {
-        let scale = settings.max_side as f64 / largest as f64;
-        image = ops::resize(&image, scale).map_err(|err| format!("缩放失败: {err}"))?;
+        let width = image.get_width();
+        let height = image.get_height();
+        let largest = width.max(height);
+        if largest > settings.max_side {
+            let scale = settings.max_side as f64 / largest as f64;
+            image = ops::resize(&image, scale).map_err(|err| format!("缩放失败: {err}"))?;
+        }
+
+        let format = effective_output_format(src, settings.output_format);
+        if format == OutputFormat::Jpg && image_has_alpha(&image) {
+            let mut opts = ops::FlattenOptions::default();
+            opts.background = vec![255.0, 255.0, 255.0];
+            image = ops::flatten_with_opts(&image, &opts)
+                .map_err(|err| format!("透明背景处理失败: {err}"))?;
+        }
+
+        let save_path = save_path_with_options(&temp, format, settings.quality);
+        image.image_write_to_file(&save_path).map_err(|err| {
+            let _ = fs::remove_file(&temp);
+            format!("写入失败: {err}")
+        })?;
     }
 
-    let format = effective_output_format(src, settings.output_format);
-    if format == OutputFormat::Jpg && image_has_alpha(&image) {
-        let mut opts = ops::FlattenOptions::default();
-        opts.background = vec![255.0, 255.0, 255.0];
-        image = ops::flatten_with_opts(&image, &opts).map_err(|err| format!("透明背景处理失败: {err}"))?;
-    }
-
-    let save_path = save_path_with_options(dst, format, settings.quality);
-    image
-        .image_write_to_file(&save_path)
-        .map_err(|err| format!("写入失败: {err}"))?;
-
+    replace_file(&temp, dst).map_err(|err| {
+        let _ = fs::remove_file(&temp);
+        format!("替换失败: {err}")
+    })?;
     Ok((src_bytes, file_size(dst)))
 }
 
@@ -452,6 +533,44 @@ fn output_path(
     dst
 }
 
+fn temp_output_path(dst: &Path) -> PathBuf {
+    let parent = dst.parent().unwrap_or_else(|| Path::new("."));
+    let stem = dst
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("pictrim");
+    let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = match dst.extension().and_then(OsStr::to_str) {
+        Some(ext) if !ext.is_empty() => {
+            format!("{stem}.pictrim-tmp-{}-{count}.{ext}", std::process::id())
+        }
+        _ => format!("{stem}.pictrim-tmp-{}-{count}", std::process::id()),
+    };
+    parent.join(name)
+}
+
+fn replace_file(temp: &Path, dst: &Path) -> std::io::Result<()> {
+    match fs::rename(temp, dst) {
+        Ok(()) => Ok(()),
+        Err(first_err) => {
+            if dst.exists() {
+                fs::remove_file(dst)?;
+                fs::rename(temp, dst)
+            } else {
+                Err(first_err)
+            }
+        }
+    }
+}
+
+fn same_file_path(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 fn image_has_alpha(image: &VipsImage) -> bool {
     matches!(image.get_bands(), 2 | 4)
 }
@@ -491,6 +610,10 @@ fn is_supported_image(path: &Path) -> bool {
 
 fn is_hidden_name(name: &OsStr) -> bool {
     name.to_string_lossy().starts_with('.')
+}
+
+fn is_temp_output_name(name: &OsStr) -> bool {
+    name.to_string_lossy().contains(".pictrim-tmp-")
 }
 
 fn file_size(path: &Path) -> u64 {
@@ -578,8 +701,63 @@ mod tests {
     }
 
     #[test]
+    fn temp_output_path_keeps_extension_for_vips_format_detection() {
+        let temp = temp_output_path(Path::new("/out/a/photo.jpg"));
+        assert_eq!(temp.extension().and_then(OsStr::to_str), Some("jpg"));
+        assert!(temp
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap()
+            .contains(".pictrim-tmp-"));
+    }
+
+    #[test]
     fn hidden_names_start_with_dot() {
         assert!(is_hidden_name(OsStr::new(".git")));
         assert!(!is_hidden_name(OsStr::new("photos")));
     }
+
+    #[test]
+    fn recognizes_pictrim_temp_outputs() {
+        assert!(is_temp_output_name(OsStr::new(
+            "photo.pictrim-tmp-123-0.jpg"
+        )));
+        assert!(!is_temp_output_name(OsStr::new("photo.jpg")));
+    }
+
+    #[test]
+    fn resize_can_replace_source_file_through_temp_output() {
+        let app = VipsApp::new("PicTrimTest", false).expect("initialize libvips");
+        app.concurrency_set(1);
+
+        let dir = std::env::temp_dir().join(format!(
+            "pictrim-test-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let image_path = dir.join("source.png");
+        fs::write(&image_path, ONE_BY_ONE_PNG).unwrap();
+
+        let settings = BatchSettings {
+            input_dir: dir.to_string_lossy().to_string(),
+            output_dir: dir.to_string_lossy().to_string(),
+            max_side: 1,
+            quality: 85,
+            concurrency: 1,
+            output_format: OutputFormat::Keep,
+            copy_non_images: false,
+            skip_existing: false,
+        };
+
+        let result = resize_image(&image_path, &image_path, &settings);
+        let _ = fs::remove_dir_all(&dir);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    const ONE_BY_ONE_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
+        0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3,
+        2, 0, 239, 191, 167, 219, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
 }

@@ -28,6 +28,14 @@ The app uses Tauri v2 for the GUI and Rust + libvips for image processing.
 
 ```bash
 npm install
+npm run dev
+```
+
+`npm run dev` starts the desktop development mode and opens the PicTrim GUI.
+
+For a production frontend build and Rust checks:
+
+```bash
 npm run build
 cd src-tauri
 cargo check
