@@ -1,0 +1,22 @@
+[package]
+name = "pictrim"
+version = "0.1.0"
+description = "Fast batch image resizing"
+authors = ["PicTrim"]
+edition = "2021"
+
+[lib]
+name = "pictrim_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+libvips = "1"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+walkdir = "2"
