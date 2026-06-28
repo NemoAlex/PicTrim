@@ -16,6 +16,16 @@ const IMAGE_EXTS: &[&str] = &[
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static VIPS_APP: OnceLock<Option<VipsApp>> = OnceLock::new();
 
+fn vips_error_detail() -> String {
+    VIPS_APP
+        .get()
+        .and_then(|app| app.as_ref())
+        .and_then(|app| app.error_buffer().ok())
+        .map(|detail| detail.trim().to_string())
+        .filter(|detail| !detail.is_empty())
+        .unwrap_or_default()
+}
+
 fn ensure_vips() -> Result<(), String> {
     let app = VIPS_APP.get_or_init(|| {
         VipsApp::new("PicTrim", false)
@@ -132,15 +142,11 @@ fn start_batch(
 
     let app_for_thread = app.clone();
     std::thread::spawn(move || {
-        let cancelled = run_batch(app_for_thread.clone(), settings, cancel);
+        run_batch(app_for_thread.clone(), settings, cancel);
         if let Some(state) = app_for_thread.try_state::<AppState>() {
             if let Ok(mut current_job) = state.current_job.lock() {
                 *current_job = None;
             }
-        }
-        if cancelled {
-            let _ =
-                app_for_thread.emit("batch-status", serde_json::json!({ "status": "cancelled" }));
         }
     });
 
@@ -445,16 +451,15 @@ fn resize_image(src: &Path, dst: &Path, settings: &BatchSettings) -> Result<(u64
     let src_bytes = file_size(src);
     let temp = temp_output_path(dst);
     {
-        let mut image = VipsImage::new_from_file(src.to_string_lossy().as_ref())
-            .map_err(|err| format!("读取失败: {err}"))?;
-
-        let width = image.get_width();
-        let height = image.get_height();
-        let largest = width.max(height);
-        if largest > settings.max_side {
-            let scale = settings.max_side as f64 / largest as f64;
-            image = ops::resize(&image, scale).map_err(|err| format!("缩放失败: {err}"))?;
-        }
+        let load_source = thumbnail_load_source(src, settings.output_format);
+        let mut opts = ops::ThumbnailOptions::default();
+        opts.height = settings.max_side;
+        opts.size = ops::Size::Down;
+        opts.no_rotate = false;
+        opts.input_profile = "srgb".to_string();
+        opts.output_profile = "srgb".to_string();
+        let mut image = ops::thumbnail_with_opts(&load_source, settings.max_side, &opts)
+            .map_err(|_| format!("读取失败: {}", vips_error_detail()))?;
 
         let format = effective_output_format(src, settings.output_format);
         if format == OutputFormat::Jpg && image_has_alpha(&image) {
@@ -588,6 +593,35 @@ fn effective_output_format(src: &Path, requested: OutputFormat) -> OutputFormat 
         Some("png") => OutputFormat::Png,
         Some("webp") => OutputFormat::Webp,
         _ => OutputFormat::Jpg,
+    }
+}
+
+fn thumbnail_load_source(src: &Path, requested: OutputFormat) -> String {
+    let path = src.to_string_lossy();
+    if loads_all_pages(src, requested) {
+        format!("{path}[n=-1]")
+    } else {
+        path.to_string()
+    }
+}
+
+fn loads_all_pages(src: &Path, requested: OutputFormat) -> bool {
+    let ext = src
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(|ext| ext.to_ascii_lowercase());
+    let ext = match ext.as_deref() {
+        Some(ext) => ext,
+        None => return false,
+    };
+    let is_animated_container = matches!(ext, "gif" | "webp" | "tif" | "tiff");
+    if !is_animated_container {
+        return false;
+    }
+    match requested {
+        OutputFormat::Keep => true,
+        OutputFormat::Webp => ext == "webp",
+        OutputFormat::Jpg | OutputFormat::Png => false,
     }
 }
 

@@ -43,7 +43,6 @@ app.innerHTML = `
       </div>
       <div class="status-pill">
         <span id="statusTitle">等待开始</span>
-        <strong id="progressPct">0%</strong>
       </div>
     </header>
 
@@ -113,7 +112,6 @@ app.innerHTML = `
         <h2>处理</h2>
         <p id="statusMessage">等待开始。</p>
       </div>
-      <div class="bar"><div id="barFill"></div></div>
       <div id="currentFile" class="current-file">暂无正在处理的文件</div>
       <div class="stats">
         <div><span>发现</span><strong id="statDiscovered">0</strong></div>
@@ -160,8 +158,6 @@ const startBtn = getButton("startBtn");
 const stopBtn = getButton("stopBtn");
 const statusTitle = getText("statusTitle");
 const statusMessage = getText("statusMessage");
-const progressPct = getText("progressPct");
-const barFill = getText("barFill");
 const currentFile = getText("currentFile");
 const failures = getText("failures");
 const logs = getText("logs");
@@ -240,15 +236,8 @@ async function stopBatch() {
 }
 
 function renderProgress(progress: BatchProgress) {
-  const pct =
-    progress.discovered > 0
-      ? Math.min(100, Math.round((progress.processed / progress.discovered) * 100))
-      : 0;
-
   statusTitle.textContent = phaseTitle(progress);
   statusMessage.textContent = progress.message ?? "正在处理图片。";
-  progressPct.textContent = `${pct}%`;
-  barFill.style.width = `${pct}%`;
   currentFile.textContent = progress.current ? `当前文件: ${progress.current}` : "暂无正在处理的文件";
 
   setText("statDiscovered", progress.discovered);

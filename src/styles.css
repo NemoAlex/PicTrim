@@ -141,13 +141,6 @@ label span,
   color: #526171;
 }
 
-.status-pill strong {
-  min-width: 44px;
-  color: #276bb5;
-  font-size: 20px;
-  text-align: right;
-}
-
 .panel {
   padding: 14px;
 }
@@ -239,21 +232,6 @@ label {
 .progress-panel {
   display: grid;
   gap: 10px;
-}
-
-.bar {
-  height: 10px;
-  overflow: hidden;
-  border: 1px solid #d2d8e0;
-  border-radius: 999px;
-  background: #e8edf3;
-}
-
-#barFill {
-  width: 0;
-  height: 100%;
-  background: #276bb5;
-  transition: width 160ms ease;
 }
 
 .current-file {
