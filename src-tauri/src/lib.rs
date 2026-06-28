@@ -7,12 +7,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "gif", "jfif",
 ];
+const PROGRESS_INTERVAL_MS: u64 = 100;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static VIPS_APP: OnceLock<Option<VipsApp>> = OnceLock::new();
 
@@ -77,6 +79,7 @@ enum OutputFormat {
 struct WorkItem {
     src: PathBuf,
     rel: PathBuf,
+    dst: PathBuf,
     is_image: bool,
 }
 
@@ -107,14 +110,42 @@ struct FailureEntry {
 
 #[derive(Default)]
 struct Counters {
-    processed: usize,
-    images: usize,
-    copied: usize,
-    skipped: usize,
-    failed: usize,
-    total_src_bytes: u64,
-    total_dst_bytes: u64,
-    failures: Vec<FailureEntry>,
+    processed: AtomicUsize,
+    images: AtomicUsize,
+    copied: AtomicUsize,
+    skipped: AtomicUsize,
+    failed: AtomicUsize,
+    total_src_bytes: AtomicU64,
+    total_dst_bytes: AtomicU64,
+    failures: Mutex<Vec<FailureEntry>>,
+}
+
+impl Counters {
+    fn snapshot(
+        &self,
+        phase: &str,
+        discovered: usize,
+        current: Option<String>,
+        message: Option<String>,
+        done: bool,
+        cancelled: bool,
+    ) -> BatchProgress {
+        BatchProgress {
+            phase: phase.to_string(),
+            discovered,
+            processed: self.processed.load(Ordering::Relaxed),
+            images: self.images.load(Ordering::Relaxed),
+            copied: self.copied.load(Ordering::Relaxed),
+            skipped: self.skipped.load(Ordering::Relaxed),
+            failed: self.failed.load(Ordering::Relaxed),
+            total_src_bytes: self.total_src_bytes.load(Ordering::Relaxed),
+            total_dst_bytes: self.total_dst_bytes.load(Ordering::Relaxed),
+            current,
+            message,
+            done,
+            cancelled,
+        }
+    }
 }
 
 #[tauri::command]
@@ -182,7 +213,37 @@ fn validate_settings(settings: &BatchSettings) -> Result<(), String> {
     if settings.concurrency < 1 || settings.concurrency > 128 {
         return Err("并发数必须在 1 到 128 之间".to_string());
     }
+    if output_inside_input(input, Path::new(&settings.output_dir)) {
+        return Err("输出目录不能位于输入目录内部，请另选位置".to_string());
+    }
     Ok(())
+}
+
+fn output_inside_input(input: &Path, output: &Path) -> bool {
+    let input = fs::canonicalize(input).unwrap_or_else(|_| input.to_path_buf());
+    let output = resolve_existing_ancestor(output);
+    output != input && output.starts_with(&input)
+}
+
+fn resolve_existing_ancestor(path: &Path) -> PathBuf {
+    let mut current = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(resolved) = fs::canonicalize(&current) {
+            let mut result = resolved;
+            for part in tail.iter().rev() {
+                result.push(part);
+            }
+            return result;
+        }
+        match (current.file_name(), current.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                current = parent.to_path_buf();
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -> bool {
@@ -205,8 +266,10 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
         },
     );
 
-    let counters = Arc::new(Mutex::new(Counters::default()));
+    let counters = Arc::new(Counters::default());
     let discovered = Arc::new(AtomicUsize::new(0));
+    let last_emit = Arc::new(AtomicU64::new(0));
+    let start = Instant::now();
     let check_collisions = settings.output_format != OutputFormat::Keep;
     let collision_seen: Arc<Mutex<HashMap<PathBuf, PathBuf>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -226,6 +289,7 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
 
     let cancel_producer = cancel.clone();
     let input_dir_producer = input_dir.clone();
+    let output_dir_producer = output_dir.clone();
     let settings_producer = settings.clone();
     let producer = std::thread::spawn(move || {
         for entry in WalkDir::new(&input_dir_producer)
@@ -263,7 +327,19 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
             }
             let is_image = is_supported_image(&src);
             if is_image || settings_producer.copy_non_images {
-                if tx.send(WorkItem { src, rel, is_image }).is_err() {
+                let dst = if is_image {
+                    output_path(&output_dir_producer, &rel, settings_producer.output_format)
+                } else {
+                    output_dir_producer.join(&rel)
+                };
+                if tx.send(WorkItem {
+                    src,
+                    rel,
+                    dst,
+                    is_image,
+                })
+                .is_err()
+                {
                     break;
                 }
             }
@@ -285,26 +361,15 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
                 discovered.fetch_add(1, Ordering::Relaxed);
 
                 if check_collisions {
-                    let dst = if item.is_image {
-                        output_path(
-                            &input_dir,
-                            &output_dir,
-                            &item.src,
-                            &item.rel,
-                            settings.output_format,
-                        )
-                    } else {
-                        output_dir.join(&item.rel)
-                    };
                     let mut seen = collision_seen.lock().expect("collision map poisoned");
-                    if let Some(previous) = seen.insert(dst.clone(), item.rel.clone()) {
+                    if let Some(previous) = seen.insert(item.dst.clone(), item.rel.clone()) {
                         emit_error(
                             &app,
                             format!(
                                 "输出路径冲突: {} 和 {} 都会写入 {}。请改用保持原格式，或调整输入文件名。",
                                 previous.to_string_lossy(),
                                 item.rel.to_string_lossy(),
-                                dst.to_string_lossy()
+                                item.dst.to_string_lossy()
                             ),
                         );
                         drop(seen);
@@ -315,38 +380,40 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
 
                 let counters = counters.clone();
                 let discovered = discovered.clone();
+                let last_emit = last_emit.clone();
                 let cancelled = cancelled.clone();
                 let app = app.clone();
-                let input_dir = input_dir.clone();
-                let output_dir = output_dir.clone();
                 let settings = settings.clone();
 
                 s.spawn(move |_| {
                     if cancelled.load(Ordering::Relaxed) {
                         return;
                     }
-                    let result = process_item(&input_dir, &output_dir, &item, &settings);
-                    let mut counters = counters.lock().expect("counter mutex poisoned");
-                    apply_result(&mut counters, &item, result);
+                    let result = process_item(&item, &settings);
+                    apply_result(&counters, &item, result);
 
-                    if counters.processed % 20 == 0 {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    let last = last_emit.load(Ordering::Relaxed);
+                    if elapsed.saturating_sub(last) >= PROGRESS_INTERVAL_MS
+                        && last_emit
+                            .compare_exchange(
+                                last,
+                                elapsed,
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                    {
                         emit_progress(
                             &app,
-                            BatchProgress {
-                                phase: "processing".to_string(),
-                                discovered: discovered.load(Ordering::Relaxed),
-                                processed: counters.processed,
-                                images: counters.images,
-                                copied: counters.copied,
-                                skipped: counters.skipped,
-                                failed: counters.failed,
-                                total_src_bytes: counters.total_src_bytes,
-                                total_dst_bytes: counters.total_dst_bytes,
-                                current: Some(item.rel.to_string_lossy().to_string()),
-                                message: None,
-                                done: false,
-                                cancelled: false,
-                            },
+                            counters.snapshot(
+                                "processing",
+                                discovered.load(Ordering::Relaxed),
+                                Some(item.rel.to_string_lossy().to_string()),
+                                None,
+                                false,
+                                false,
+                            ),
                         );
                     }
                 });
@@ -356,32 +423,29 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
 
     let _ = producer.join();
 
-    let counters = counters_done.lock().expect("counter mutex poisoned");
     let is_cancelled = cancel.load(Ordering::Relaxed);
     let discovered = discovered_done.load(Ordering::Relaxed);
     emit_progress(
         &app_done,
-        BatchProgress {
-            phase: "done".to_string(),
+        counters_done.snapshot(
+            "done",
             discovered,
-            processed: counters.processed,
-            images: counters.images,
-            copied: counters.copied,
-            skipped: counters.skipped,
-            failed: counters.failed,
-            total_src_bytes: counters.total_src_bytes,
-            total_dst_bytes: counters.total_dst_bytes,
-            current: None,
-            message: Some(if is_cancelled {
+            None,
+            Some(if is_cancelled {
                 "已停止任务".to_string()
             } else {
                 "处理完成".to_string()
             }),
-            done: true,
-            cancelled: is_cancelled,
-        },
+            true,
+            is_cancelled,
+        ),
     );
-    let _ = app_done.emit("batch-failures", counters.failures.clone());
+    let failures = counters_done
+        .failures
+        .lock()
+        .map(|failures| failures.clone())
+        .unwrap_or_default();
+    let _ = app_done.emit("batch-failures", failures);
 
     is_cancelled
 }
@@ -394,23 +458,8 @@ enum ItemResult {
     Failed(String),
 }
 
-fn process_item(
-    input_dir: &Path,
-    output_dir: &Path,
-    item: &WorkItem,
-    settings: &BatchSettings,
-) -> ItemResult {
-    let dst = if item.is_image {
-        output_path(
-            input_dir,
-            output_dir,
-            &item.src,
-            &item.rel,
-            settings.output_format,
-        )
-    } else {
-        output_dir.join(&item.rel)
-    };
+fn process_item(item: &WorkItem, settings: &BatchSettings) -> ItemResult {
+    let dst = &item.dst;
 
     if settings.skip_existing && dst.exists() {
         return ItemResult::Skipped;
@@ -423,7 +472,7 @@ fn process_item(
     }
 
     if item.is_image {
-        match resize_image(&item.src, &dst, settings) {
+        match resize_image(&item.src, dst, settings) {
             Ok((src_bytes, dst_bytes)) => ItemResult::Image {
                 src_bytes,
                 dst_bytes,
@@ -431,10 +480,10 @@ fn process_item(
             Err(err) => ItemResult::Failed(err),
         }
     } else {
-        if same_file_path(&item.src, &dst) {
+        if same_file_path(&item.src, dst) {
             return ItemResult::Skipped;
         }
-        match fs::copy(&item.src, &dst) {
+        match fs::copy(&item.src, dst) {
             Ok(dst_bytes) => {
                 let src_bytes = file_size(&item.src);
                 ItemResult::Copied {
@@ -483,45 +532,41 @@ fn resize_image(src: &Path, dst: &Path, settings: &BatchSettings) -> Result<(u64
     Ok((src_bytes, file_size(dst)))
 }
 
-fn apply_result(counters: &mut Counters, item: &WorkItem, result: ItemResult) {
-    counters.processed += 1;
+fn apply_result(counters: &Counters, item: &WorkItem, result: ItemResult) {
+    counters.processed.fetch_add(1, Ordering::Relaxed);
     match result {
         ItemResult::Image {
             src_bytes,
             dst_bytes,
         } => {
-            counters.images += 1;
-            counters.total_src_bytes += src_bytes;
-            counters.total_dst_bytes += dst_bytes;
+            counters.images.fetch_add(1, Ordering::Relaxed);
+            counters.total_src_bytes.fetch_add(src_bytes, Ordering::Relaxed);
+            counters.total_dst_bytes.fetch_add(dst_bytes, Ordering::Relaxed);
         }
         ItemResult::Copied {
             src_bytes,
             dst_bytes,
         } => {
-            counters.copied += 1;
-            counters.total_src_bytes += src_bytes;
-            counters.total_dst_bytes += dst_bytes;
+            counters.copied.fetch_add(1, Ordering::Relaxed);
+            counters.total_src_bytes.fetch_add(src_bytes, Ordering::Relaxed);
+            counters.total_dst_bytes.fetch_add(dst_bytes, Ordering::Relaxed);
         }
         ItemResult::Skipped => {
-            counters.skipped += 1;
+            counters.skipped.fetch_add(1, Ordering::Relaxed);
         }
         ItemResult::Failed(message) => {
-            counters.failed += 1;
-            counters.failures.push(FailureEntry {
-                rel: item.rel.to_string_lossy().to_string(),
-                message,
-            });
+            counters.failed.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut failures) = counters.failures.lock() {
+                failures.push(FailureEntry {
+                    rel: item.rel.to_string_lossy().to_string(),
+                    message,
+                });
+            }
         }
     }
 }
 
-fn output_path(
-    _input_dir: &Path,
-    output_dir: &Path,
-    _src: &Path,
-    rel: &Path,
-    format: OutputFormat,
-) -> PathBuf {
+fn output_path(output_dir: &Path, rel: &Path, format: OutputFormat) -> PathBuf {
     let mut dst = output_dir.join(rel);
     match format {
         OutputFormat::Jpg => {
@@ -712,26 +757,33 @@ mod tests {
 
     #[test]
     fn maps_output_extension() {
-        let output = output_path(
-            Path::new("/in"),
-            Path::new("/out"),
-            Path::new("/in/a/b.png"),
-            Path::new("a/b.png"),
-            OutputFormat::Webp,
-        );
+        let output = output_path(Path::new("/out"), Path::new("a/b.png"), OutputFormat::Webp);
         assert_eq!(output, PathBuf::from("/out/a/b.webp"));
     }
 
     #[test]
     fn keeps_output_extension_when_requested() {
-        let output = output_path(
-            Path::new("/in"),
-            Path::new("/out"),
-            Path::new("/in/a/b.png"),
-            Path::new("a/b.png"),
-            OutputFormat::Keep,
-        );
+        let output = output_path(Path::new("/out"), Path::new("a/b.png"), OutputFormat::Keep);
         assert_eq!(output, PathBuf::from("/out/a/b.png"));
+    }
+
+    #[test]
+    fn rejects_output_inside_input_but_allows_others() {
+        let base = std::env::temp_dir().join(format!(
+            "pictrim-io-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let input = base.join("input");
+        let nested = input.join("out");
+        let sibling = base.join("output");
+        fs::create_dir_all(&input).unwrap();
+
+        assert!(output_inside_input(&input, &nested));
+        assert!(!output_inside_input(&input, &sibling));
+        assert!(!output_inside_input(&input, &input));
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
