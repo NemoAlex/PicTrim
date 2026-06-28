@@ -1,39 +1,28 @@
 # PicTrim
 
-PicTrim is a portable desktop tool for high-throughput batch image resizing.
+PicTrim 是一款便携的桌面工具，专为处理大量图片而设计——可一次性处理上百万张图片的批量缩放。
 
-The app uses Tauri v2 for the GUI and Rust + libvips for image processing.
+应用使用 Tauri v2 构建图形界面，图像处理则由 Rust + libvips 完成。
 
-## Features
+## 默认设置
 
-- Pick input and output folders from a simple GUI.
-- Resize images by longest side without enlarging small images.
-- Choose JPG, PNG, WebP, or keep original format.
-- Tune quality and worker concurrency.
-- Skip existing outputs by default.
-- Optionally copy non-image files.
-- Preserve relative directory structure.
-- Stream progress and failure lists back to the UI.
+- 最长边：`2000`
+- 压缩质量：`85`
+- 并发数：`20`
+- 输出格式：`JPG`
+- 跳过已存在文件：开启
+- 复制非图片文件：关闭
 
-## Defaults
-
-- Longest side: `2000`
-- Quality: `85`
-- Concurrency: `20`
-- Output format: `JPG`
-- Skip existing files: enabled
-- Copy non-image files: disabled
-
-## Development
+## 开发
 
 ```bash
 npm install
 npm run dev
 ```
 
-`npm run dev` starts the desktop development mode and opens the PicTrim GUI.
+`npm run dev` 将启动桌面开发模式并打开 PicTrim 界面。
 
-For a production frontend build and Rust checks:
+如需生产环境前端构建和 Rust 检查：
 
 ```bash
 npm run build
@@ -41,33 +30,58 @@ cd src-tauri
 cargo check
 ```
 
-Running or linking the Rust binary requires libvips to be installed on the build machine. On macOS, for example:
+编译或链接 Rust 二进制文件需要在本机安装 libvips。
+
+**macOS：**
 
 ```bash
 brew install vips
 ```
 
-## Portable Build Notes
+**Windows：**
 
-Build on the target platform for the intended release artifact.
+推荐使用 [vcpkg](https://github.com/microsoft/vcpkg) 安装 libvips：
 
-1. Install Rust stable, Node.js, and the Tauri prerequisites for the target platform.
-2. Install or stage a libvips distribution for the target platform.
-3. Ensure libvips runtime libraries are discoverable at runtime. For portable builds, place the required libvips dynamic libraries next to the app binary or configure the platform's library search path.
-4. Run:
+```powershell
+vcpkg install libvips:x64-windows
+```
+
+安装后确保 vcpkg 的工具链集成到构建环境中：
+
+```powershell
+vcpkg integrate install
+```
+
+或者从 [libvips 官方](https://www.libvips.org/install.html) 下载预编译的 Windows 二进制包，并手动将 `bin` 目录加入 `PATH`。
+
+## 便携版构建说明
+
+请在目标平台上构建对应的发布产物。
+
+1. 安装 Rust 稳定版、Node.js 以及目标平台的 Tauri 前置依赖。
+2. 为目标平台安装 libvips（参见上方 macOS / Windows 安装说明）。
+3. 执行：
 
 ```bash
 npm install
 npm run tauri:build
 ```
 
-The Tauri config currently uses the `app` bundle target so the release can be distributed as a portable folder. If installers are needed later, add platform-specific bundle targets in `src-tauri/tauri.conf.json`.
+构建完成后，`release/PicTrim/` 目录即为自包含的便携版产物，包含应用二进制文件及所有必需的 libvips 动态库，可直接打包分发，无需手动拷贝。
 
-## Verification
+如需安装包，可在 `src-tauri/tauri.conf.json` 中添加平台特定的打包目标。
 
-Validated in this workspace:
+### Windows 构建注意事项
+
+- 需安装 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（含 MSVC 及 Windows SDK）。
+- 需安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（Tauri v2 依赖）。
+- 构建脚本会自动从 `VCPKG_ROOT` 或 `PATH` 中查找 libvips DLL 并复制到发布目录。如未找到，请确保 `VCPKG_ROOT` 环境变量已设置，或 vips.dll 所在目录已加入 `PATH`。
+
+## 验证
+
+本工作区中已验证：
 
 - `npm run build`
 - `cargo check`
 
-`cargo test` reached the linker and failed on this macOS machine because system libvips is not installed (`ld: library 'vips' not found`). Install libvips locally or run tests on a build machine with libvips available.
+`cargo test` 在本 macOS 机器上到达链接阶段后失败，原因是未安装系统 libvips（`ld: library 'vips' not found`）。请在本地安装 libvips，或在已安装 libvips 的构建机器上运行测试。

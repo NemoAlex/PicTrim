@@ -9,7 +9,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build && node scripts/post-build.mjs",
+    "post-build": "node scripts/post-build.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
