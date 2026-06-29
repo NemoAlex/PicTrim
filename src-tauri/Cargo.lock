@@ -1673,16 +1673,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libvips"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29c2daabf7114fd6e626fef46e3ba187d204554cf94d31312424300bd8160d9b"
-dependencies = [
- "num-derive",
- "num-traits",
-]
-
-[[package]]
 name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2174,9 +2164,9 @@ dependencies = [
 name = "pictrim"
 version = "0.1.0"
 dependencies = [
- "libvips",
  "pkg-config",
  "rayon",
+ "rs-vips",
  "serde",
  "tauri",
  "tauri-build",
@@ -2499,6 +2489,16 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "rs-vips"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52bff86a769bb29a4a68a54ca68dfb8e713aa5e6c6a380d26d6878393007528c"
+dependencies = [
+ "num-derive",
+ "num-traits",
 ]
 
 [[package]]

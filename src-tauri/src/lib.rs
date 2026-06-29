@@ -1,10 +1,11 @@
-use libvips::{ops, VipsApp, VipsImage};
+use rs_vips::{bindings, Vips, VipsImage, voption::{call, call_option_string, Setter, VOption}};
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -16,28 +17,26 @@ const IMAGE_EXTS: &[&str] = &[
 ];
 const PROGRESS_INTERVAL_MS: u64 = 100;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-static VIPS_APP: OnceLock<Option<VipsApp>> = OnceLock::new();
+static VIPS_INIT: OnceLock<bool> = OnceLock::new();
 
 fn vips_error_detail() -> String {
-    VIPS_APP
-        .get()
-        .and_then(|app| app.as_ref())
-        .and_then(|app| app.error_buffer().ok())
+    Vips::error_buffer()
+        .ok()
         .map(|detail| detail.trim().to_string())
         .filter(|detail| !detail.is_empty())
         .unwrap_or_default()
 }
 
 fn ensure_vips() -> Result<(), String> {
-    let app = VIPS_APP.get_or_init(|| {
-        VipsApp::new("PicTrim", false)
-            .map(|app| {
-                app.concurrency_set(1);
-                app
-            })
-            .ok()
+    let initialized = VIPS_INIT.get_or_init(|| {
+        if Vips::init("PicTrim").is_ok() {
+            Vips::concurrency_set(1);
+            true
+        } else {
+            false
+        }
     });
-    if app.is_some() {
+    if *initialized {
         Ok(())
     } else {
         Err("libvips 初始化失败".to_string())
@@ -501,25 +500,39 @@ fn resize_image(src: &Path, dst: &Path, settings: &BatchSettings) -> Result<(u64
     let temp = temp_output_path(dst);
     {
         let load_source = thumbnail_load_source(src, settings.output_format);
-        let mut opts = ops::ThumbnailOptions::default();
-        opts.height = settings.max_side;
-        opts.size = ops::Size::Down;
-        opts.no_rotate = false;
-        opts.input_profile = Some("srgb".to_string());
-        opts.output_profile = Some("srgb".to_string());
-        let mut image = ops::thumbnail_with_opts(&load_source, settings.max_side, &opts)
-            .map_err(|_| format!("读取失败: {}", vips_error_detail()))?;
+        let mut out = VipsImage::from(null_mut() as *mut bindings::VipsImage);
+        let result = call_option_string("thumbnail", "", VOption::new()
+            .set("filename", load_source.as_str())
+            .set("width", settings.max_side)
+            .set("height", settings.max_side)
+            .set("size", "down")
+            .set("no-rotate", false)
+            .set("import-profile", "srgb")
+            .set("export-profile", "srgb")
+            .set("out", &mut out))
+            .map_err(|e| format!("读取失败: {e} {}", vips_error_detail()))?;
+        if result < 0 {
+            return Err(format!("读取失败: {}", vips_error_detail()));
+        }
+        let mut image = out;
 
         let format = effective_output_format(src, settings.output_format);
-        if format == OutputFormat::Jpg && image_has_alpha(&image) {
-            let mut opts = ops::FlattenOptions::default();
-            opts.background = vec![255.0, 255.0, 255.0];
-            image = ops::flatten_with_opts(&image, &opts)
-                .map_err(|err| format!("透明背景处理失败: {err}"))?;
+        if format == OutputFormat::Jpg && image.hasalpha() {
+            let mut flattened = VipsImage::from(null_mut() as *mut bindings::VipsImage);
+            let bg = [255.0_f64, 255.0, 255.0];
+            let result = call("flatten", VOption::new()
+                .set("in", &image)
+                .set("background", &bg[..])
+                .set("out", &mut flattened))
+                .map_err(|e| format!("透明背景处理失败: {e} {}", vips_error_detail()))?;
+            if result < 0 {
+                return Err(format!("透明背景处理失败: {}", vips_error_detail()));
+            }
+            image = flattened;
         }
 
         let save_path = save_path_with_options(&temp, format, settings.quality);
-        image.image_write_to_file(&save_path).map_err(|err| {
+        image.write_to_file(&save_path).map_err(|err| {
             let _ = fs::remove_file(&temp);
             format!("写入失败: {err}")
         })?;
@@ -619,10 +632,6 @@ fn same_file_path(left: &Path, right: &Path) -> bool {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,
     }
-}
-
-fn image_has_alpha(image: &VipsImage) -> bool {
-    matches!(image.get_bands(), 2 | 4)
 }
 
 fn effective_output_format(src: &Path, requested: OutputFormat) -> OutputFormat {
@@ -813,8 +822,8 @@ mod tests {
 
     #[test]
     fn resize_can_replace_source_file_through_temp_output() {
-        let app = VipsApp::new("PicTrimTest", false).expect("initialize libvips");
-        app.concurrency_set(1);
+        Vips::init("PicTrimTest").expect("initialize libvips");
+        Vips::concurrency_set(1);
 
         let dir = std::env::temp_dir().join(format!(
             "pictrim-test-{}-{}",
