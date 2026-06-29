@@ -37,30 +37,60 @@ function buildWindows() {
 
   const vipsBin = findVipsOnWindows();
   if (!vipsBin) {
-    console.warn('Warning: could not find libvips DLLs. Set VCPKG_ROOT or add vips.dll directory to PATH.');
-    return;
+    console.error('Could not find libvips DLLs. Set VIPS_DIR/VCPKG_ROOT, or add the libvips bin directory to PATH.');
+    process.exit(1);
   }
-  const dlls = fs.readdirSync(vipsBin).filter(f => f.endsWith('.dll'));
+  const dlls = fs.readdirSync(vipsBin).filter(f => f.toLowerCase().endsWith('.dll'));
+  if (dlls.length === 0) {
+    console.error(`No DLL files found in libvips bin directory: ${vipsBin}`);
+    process.exit(1);
+  }
   for (const dll of dlls) {
     fs.copyFileSync(path.join(vipsBin, dll), path.join(outDir, dll));
   }
+  assertWindowsBundleComplete(outDir);
   console.log(`Copied ${dlls.length} DLLs from ${vipsBin}`);
 }
 
 function findVipsOnWindows() {
+  if (process.env.VIPS_DIR) {
+    const dir = path.join(process.env.VIPS_DIR, 'bin');
+    if (isVipsBinDir(dir)) return dir;
+  }
   if (process.env.VCPKG_ROOT) {
     const dir = path.join(process.env.VCPKG_ROOT, 'installed', 'x64-windows', 'bin');
-    if (fs.existsSync(path.join(dir, 'vips.dll'))) return dir;
+    if (isVipsBinDir(dir)) return dir;
   }
   try {
     const libdir = execSync('pkg-config --variable=libdir vips', { encoding: 'utf-8' }).trim();
     const bindir = path.join(path.dirname(libdir), 'bin');
-    if (fs.existsSync(path.join(bindir, 'vips.dll'))) return bindir;
+    if (isVipsBinDir(bindir)) return bindir;
   } catch {}
-  for (const p of (process.env.PATH || '').split(';')) {
-    if (p && fs.existsSync(path.join(p, 'vips.dll'))) return p;
+  for (const p of (process.env.PATH || '').split(path.delimiter)) {
+    if (p && isVipsBinDir(p)) return p;
   }
   return null;
+}
+
+function isVipsBinDir(dir) {
+  if (!dir || !fs.existsSync(dir)) return false;
+  const files = fs.readdirSync(dir).map(f => f.toLowerCase());
+  return files.includes('vips.dll') || files.some(f => f.startsWith('libvips') && f.endsWith('.dll'));
+}
+
+function assertWindowsBundleComplete(dir) {
+  const files = fs.readdirSync(dir).map(f => f.toLowerCase());
+  const required = [
+    ['libvips', f => f === 'vips.dll' || (f.startsWith('libvips') && f.endsWith('.dll'))],
+    ['glib', f => f.includes('glib-2.0') && f.endsWith('.dll')],
+    ['gobject', f => f.includes('gobject-2.0') && f.endsWith('.dll')],
+  ];
+  const missing = required.filter(([, matches]) => !files.some(matches)).map(([name]) => name);
+  if (missing.length > 0) {
+    console.error(`Portable bundle is missing required DLLs: ${missing.join(', ')}`);
+    console.error(`Checked directory: ${dir}`);
+    process.exit(1);
+  }
 }
 
 // ── macOS ────────────────────────────────────────────────────────────
