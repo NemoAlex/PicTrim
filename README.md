@@ -69,6 +69,8 @@ npm run tauri:build
 
 构建完成后，`release/PicTrim/` 目录即为自包含的便携版产物，包含应用二进制文件及所有必需的 libvips 动态库，可直接打包分发，无需手动拷贝。请分发整个 `release/PicTrim/` 目录，不要只分发单独的 `PicTrim.exe`。
 
+Windows 会额外生成 NSIS 安装包，产物位于 `src-tauri/target/release/bundle/nsis/`。安装包会把应用和 libvips DLL 安装到同一目录，适合面向普通用户分发。
+
 如需安装包，可在 `src-tauri/tauri.conf.json` 中添加平台特定的打包目标。
 
 ### Windows 构建注意事项
@@ -77,6 +79,7 @@ npm run tauri:build
 - 需安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（Tauri v2 依赖）。
 - 构建脚本会自动从 `VIPS_DIR`、`VCPKG_ROOT` 或 `PATH` 中查找 libvips DLL 并复制到发布目录。如未找到，请确保 `VIPS_DIR` / `VCPKG_ROOT` 环境变量已设置，或包含 `libvips*.dll` / `vips.dll` 的 `bin` 目录已加入 `PATH`。
 - 如果构建脚本找不到 libvips DLL，或发布目录缺少关键 DLL，构建会直接失败，避免生成依赖系统 libvips 的半成品。
+- Windows 安装包打包前会执行 `npm run stage-vips`，将 libvips DLL 预先复制到 `src-tauri/target/release/`，确保安装包携带这些运行时文件。
 - Windows MSVC 构建会限制隐式依赖 DLL 的搜索范围为应用目录和 System32，避免通过 `PATH` 加载系统安装的 libvips。
 
 ## 验证
