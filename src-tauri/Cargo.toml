@@ -14,7 +14,7 @@ pkg-config = "0.3"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-libvips = "1"
+libvips = "2"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }

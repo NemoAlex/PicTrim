@@ -505,8 +505,8 @@ fn resize_image(src: &Path, dst: &Path, settings: &BatchSettings) -> Result<(u64
         opts.height = settings.max_side;
         opts.size = ops::Size::Down;
         opts.no_rotate = false;
-        opts.input_profile = "srgb".to_string();
-        opts.output_profile = "srgb".to_string();
+        opts.input_profile = Some("srgb".to_string());
+        opts.output_profile = Some("srgb".to_string());
         let mut image = ops::thumbnail_with_opts(&load_source, settings.max_side, &opts)
             .map_err(|_| format!("读取失败: {}", vips_error_detail()))?;
 
