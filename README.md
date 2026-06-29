@@ -64,7 +64,7 @@ brew install vips
 Windows 推荐使用 vcpkg：
 
 ```powershell
-vcpkg install libvips:x64-windows
+vcpkg install vips:x64-windows
 vcpkg integrate install
 ```
 
