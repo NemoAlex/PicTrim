@@ -67,8 +67,21 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          vcpkg install vips:x64-windows
-          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          $version = "8.18.3"
+          $url = "https://github.com/libvips/build-win64-mxe/releases/download/v$version/vips-dev-x64-all-$version.zip"
+          $archive = Join-Path $env:RUNNER_TEMP "vips.zip"
+          $extractDir = Join-Path $env:RUNNER_TEMP "vips"
+
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $extractDir
+
+          $vipsDir = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
+          if (-not $vipsDir) {
+            throw "Could not find extracted libvips directory."
+          }
+
+          echo "VIPS_DIR=$($vipsDir.FullName)" >> $env:GITHUB_ENV
+          echo "$($vipsDir.FullName)\bin" >> $env:GITHUB_PATH
 
       - name: Build release artifacts
         run: npm run tauri:build

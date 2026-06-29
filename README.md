@@ -61,11 +61,11 @@ macOS：
 brew install vips
 ```
 
-Windows 推荐使用 vcpkg：
+Windows 推荐使用 libvips 官方预编译包，并设置 `VIPS_DIR` 指向解压后的目录：
 
 ```powershell
-vcpkg install vips:x64-windows
-vcpkg integrate install
+$env:VIPS_DIR = "C:\path\to\vips-dev-8.x"
+$env:Path = "$env:VIPS_DIR\bin;$env:Path"
 ```
 
 也可以参考 [libvips 官方安装说明](https://www.libvips.org/install.html)。
