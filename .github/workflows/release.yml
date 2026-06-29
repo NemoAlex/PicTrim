@@ -36,6 +36,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
       - name: Verify release version
         shell: bash
         run: |
@@ -46,12 +52,6 @@ jobs:
           node -e 'const cfg=require("./src-tauri/tauri.conf.json"); if (cfg.version !== process.env.RELEASE_VERSION) { throw new Error(`tauri.conf.json version ${cfg.version} does not match ${process.env.RELEASE_VERSION}`) }'
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
