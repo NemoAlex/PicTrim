@@ -3,6 +3,14 @@
     "beforeBundleCommand": "npm run stage-vips"
   },
   "bundle": {
-    "targets": ["nsis"]
+    "targets": ["nsis"],
+    "resources": {
+      "target/release/*.dll": ""
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
   }
 }

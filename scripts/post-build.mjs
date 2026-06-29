@@ -10,6 +10,7 @@ import { copyWindowsVipsDlls } from './libvips-windows.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const targetDir = path.join(root, 'src-tauri', 'target', 'release');
+const releaseDir = path.join(root, 'release');
 const outDir = path.join(root, 'release', 'PicTrim');
 
 fs.rmSync(outDir, { recursive: true, force: true });
@@ -43,6 +44,35 @@ function buildWindows() {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
+
+  copyWindowsInstaller();
+}
+
+function copyWindowsInstaller() {
+  const nsisDir = path.join(targetDir, 'bundle', 'nsis');
+  if (!fs.existsSync(nsisDir)) {
+    console.error(`NSIS bundle directory not found: ${nsisDir}`);
+    process.exit(1);
+  }
+
+  const installers = fs.readdirSync(nsisDir)
+    .filter(file => file.toLowerCase().endsWith('.exe'))
+    .map(file => ({
+      file,
+      path: path.join(nsisDir, file),
+      mtimeMs: fs.statSync(path.join(nsisDir, file)).mtimeMs,
+    }))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  if (installers.length === 0) {
+    console.error(`No NSIS installer found in: ${nsisDir}`);
+    process.exit(1);
+  }
+
+  const installer = installers[0];
+  const dest = path.join(releaseDir, installer.file);
+  fs.copyFileSync(installer.path, dest);
+  console.log(`Installer ready: ${dest}`);
 }
 
 // ── macOS ────────────────────────────────────────────────────────────
