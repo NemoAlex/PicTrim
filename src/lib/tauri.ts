@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { BatchProgress, BatchSettings, FailureEntry } from "./types";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import type { BatchProgress, BatchSettings, FailureEntry, SourceEntry } from "./types";
 
 export function startBatch(settings: BatchSettings): Promise<void> {
   return invoke("start_batch", { settings });
@@ -11,6 +12,18 @@ export function cancelBatch(): Promise<void> {
   return invoke("cancel_batch");
 }
 
+export function loadSettings(): Promise<BatchSettings | null> {
+  return invoke("load_settings");
+}
+
+export function saveSettings(settings: BatchSettings): Promise<void> {
+  return invoke("save_settings", { settings });
+}
+
+export function classifySources(paths: string[]): Promise<SourceEntry[]> {
+  return invoke("classify_sources", { paths });
+}
+
 export async function pickDirectory(): Promise<string | null> {
   const selected = await open({
     directory: true,
@@ -18,6 +31,36 @@ export async function pickDirectory(): Promise<string | null> {
     title: "选择目录",
   });
   return typeof selected === "string" ? selected : null;
+}
+
+export async function pickDirectories(): Promise<string[]> {
+  const selected = await open({
+    directory: true,
+    multiple: true,
+    title: "选择目录",
+  });
+  return Array.isArray(selected) ? selected.filter((path): path is string => typeof path === "string") : [];
+}
+
+export async function pickFiles(): Promise<string[]> {
+  const selected = await open({
+    directory: false,
+    multiple: true,
+    title: "选择文件",
+  });
+  return Array.isArray(selected)
+    ? selected.filter((path): path is string => typeof path === "string")
+    : typeof selected === "string"
+      ? [selected]
+      : [];
+}
+
+export function onSourceDrop(callback: (paths: string[]) => void): Promise<UnlistenFn> {
+  return getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type === "drop") {
+      callback(event.payload.paths);
+    }
+  });
 }
 
 export function onProgress(callback: (progress: BatchProgress) => void): Promise<UnlistenFn> {

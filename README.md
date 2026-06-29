@@ -1,17 +1,71 @@
 # PicTrim
 
-PicTrim 是一款便携的桌面工具，专为处理大量图片而设计——可一次性处理上百万张图片的批量缩放。
+PicTrim 是一款面向海量图片的桌面批处理工具。把文件或目录拖进去，选择输出位置，就可以高速完成图片缩放、压缩、旋转、格式转换和目录整理。
 
-应用使用 Tauri v2 构建图形界面，图像处理则由 Rust + libvips 完成。
+它适合处理从几百张到上百万张图片的任务：电商素材、相册归档、网站图片、模型训练数据集、扫描件、截图库、内容平台封面，都可以用同一套流程批量生成可发布、可存档、可迁移的图片结果。
 
-## 默认设置
+## 主要功能
 
-- 最长边：`2000`
-- 压缩质量：`85`
-- 并发数：CPU 核心数
-- 输出格式：`保持原格式`
-- 跳过已存在文件：开启
-- 复制非图片文件：关闭
+- **超高性能批处理**：为大量图片设计，支持多线程并发处理，能持续扫描并处理大型目录，不需要先把所有文件一次性载入内存。
+- **文件和目录混合输入**：可以添加单张图片、多个文件、一个目录或多个目录，也支持直接拖拽。
+- **保留目录结构**：单目录处理时保留原始层级；多来源处理时目录会进入同名子目录，避免不同来源混在一起。
+- **三种缩放方式**：
+  - 按最长边等比缩放，适合统一限制图片体积和展示尺寸。
+  - 适配指定宽高，适合生成落在固定尺寸范围内的图片。
+  - 填充裁剪，适合头像、封面、商品图等固定比例输出。
+- **智能裁剪缩略图**：可生成缩略图，并在填充裁剪时尽量保留视觉重点。
+- **自动或手动旋转**：可按图片方向信息自动校正，也可以统一旋转 90 度、180 度或 270 度。
+- **格式转换**：支持输出 JPG、PNG、WebP，也可以保持原格式。
+- **压缩质量控制**：按用途调整图片质量，在清晰度和文件大小之间取得平衡。
+- **可选择是否放大**：避免小图被强行拉大，也可以在需要统一尺寸时允许放大。
+- **非图片文件处理**：可以忽略非图片文件，也可以复制到输出目录，便于完整迁移素材目录。
+- **跳过或覆盖已存在文件**：支持断点式重复处理，已经生成过的文件可以直接跳过。
+- **实时进度与统计**：显示当前文件、处理数量、生成图片数、跳过数、失败数，以及处理前后的总体积变化。
+- **错误列表**：处理失败的文件会集中列出，便于之后单独排查。
+- **安全输出**：会阻止把输出目录放在输入目录内部，避免重复扫描和覆盖风险；也会检测输出路径冲突。
+
+## 支持的图片特征
+
+PicTrim 可以识别并处理常见图片文件：
+
+- JPG / JPEG / JFIF
+- PNG
+- WebP
+- BMP
+- TIFF / TIF
+- GIF
+
+处理过程中会尽量保留图片的正确方向，并将输出转换到适合通用查看和发布的 sRGB 色彩空间。将透明图片输出为 JPG 时，透明区域会自动铺成白色背景。
+
+## 适合做什么
+
+- 把相机原图批量压到网页、博客、知识库或网盘更友好的尺寸。
+- 把商品图、头像、封面统一裁成固定比例。
+- 把大批 PNG / JPG 转成 WebP，减少发布体积。
+- 为数据集批量生成统一边长或统一宽高的训练图片。
+- 整理多层级素材目录，同时保留原始文件结构。
+- 在不重复生成已有结果的情况下，继续处理新增图片。
+
+## 使用方式
+
+1. 打开 PicTrim。
+2. 拖入图片文件或文件夹，也可以点击按钮添加文件 / 目录。
+3. 选择输出目录。
+4. 设置尺寸、旋转、格式、质量和批处理选项。
+5. 点击“开始处理”。
+
+处理过程中可以查看实时进度、当前文件、节省空间比例和错误列表。需要停止时，已开始写入的图片会先完成，之后任务停止。
+
+## 性能特点
+
+PicTrim 的核心目标是“快且稳定地处理很多文件”：
+
+- 多线程并发处理，能充分利用多核 CPU。
+- 边扫描边处理，面对超大目录时启动更快。
+- 基于流式任务队列，不需要一次性保存完整文件列表。
+- 跳过隐藏文件和临时输出文件，减少无意义扫描。
+- 写入时使用临时文件再替换目标文件，降低生成半成品的概率。
+- 可跳过已有输出文件，适合反复增量处理。
 
 ## 开发
 
@@ -20,73 +74,47 @@ npm install
 npm run dev
 ```
 
-`npm run dev` 将启动桌面开发模式并打开 PicTrim 界面。
+`npm run dev` 会启动桌面开发模式并打开 PicTrim 界面。
 
-如需生产环境前端构建和 Rust 检查：
+如需运行前端构建检查：
 
 ```bash
 npm run build
+```
+
+如需检查 Rust 部分：
+
+```bash
 cd src-tauri
 cargo check
 ```
 
 编译或链接 Rust 二进制文件需要在本机安装 libvips。
 
-**macOS：**
+macOS：
 
 ```bash
 brew install vips
 ```
 
-**Windows：**
-
-推荐使用 [vcpkg](https://github.com/microsoft/vcpkg) 安装 libvips：
+Windows 推荐使用 vcpkg：
 
 ```powershell
 vcpkg install libvips:x64-windows
-```
-
-安装后确保 vcpkg 的工具链集成到构建环境中：
-
-```powershell
 vcpkg integrate install
 ```
 
-或者从 [libvips 官方](https://www.libvips.org/install.html) 下载预编译的 Windows 二进制包，并手动将 `bin` 目录加入 `PATH`。
+也可以从 [libvips 官方安装说明](https://www.libvips.org/install.html) 获取预编译版本，并将对应 `bin` 目录加入 `PATH`。
 
-## 便携版构建说明
+## 构建便携版
 
-请在目标平台上构建对应的发布产物。
-
-1. 安装 Rust 稳定版、Node.js 以及目标平台的 Tauri 前置依赖。
-2. 为目标平台安装 libvips（参见上方 macOS / Windows 安装说明）。
-3. 执行：
+请在目标平台上构建对应发布产物：
 
 ```bash
 npm install
 npm run tauri:build
 ```
 
-构建完成后，`release/PicTrim/` 目录即为自包含的便携版产物，包含应用二进制文件及所有必需的 libvips 动态库，可直接打包分发，无需手动拷贝。请分发整个 `release/PicTrim/` 目录，不要只分发单独的 `PicTrim.exe`。
+构建完成后，`release/PicTrim/` 目录即为便携版产物，包含应用二进制文件及所需运行时文件。分发时请分发整个 `release/PicTrim/` 目录。
 
-Windows 会额外生成 NSIS 安装包，并复制到 `release/` 目录下。安装包会把应用和 libvips DLL 安装到同一目录，默认安装到 `Program Files`，适合面向普通用户分发。
-
-如需安装包，可在 `src-tauri/tauri.conf.json` 中添加平台特定的打包目标。
-
-### Windows 构建注意事项
-
-- 需安装 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（含 MSVC 及 Windows SDK）。
-- 需安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（Tauri v2 依赖）。
-- 构建脚本会自动从 `VIPS_DIR`、`VCPKG_ROOT` 或 `PATH` 中查找 libvips DLL 并复制到发布目录。如未找到，请确保 `VIPS_DIR` / `VCPKG_ROOT` 环境变量已设置，或包含 `libvips*.dll` / `vips.dll` 的 `bin` 目录已加入 `PATH`。
-- 如果构建脚本找不到 libvips DLL，或发布目录缺少关键 DLL，构建会直接失败，避免生成依赖系统 libvips 的半成品。
-- Windows 安装包打包前会执行 `npm run stage-vips`，将 libvips DLL 预先复制到 `src-tauri/target/release/`，并通过 `bundle.resources` 显式打包这些运行时文件。
-- Windows MSVC 构建会限制隐式依赖 DLL 的搜索范围为应用目录和 System32，避免通过 `PATH` 加载系统安装的 libvips。
-
-## 验证
-
-本工作区中已验证：
-
-- `npm run build`
-- `cargo check`
-
-`cargo test` 在本 macOS 机器上到达链接阶段后失败，原因是未安装系统 libvips（`ld: library 'vips' not found`）。请在本地安装 libvips，或在已安装 libvips 的构建机器上运行测试。
+Windows 会额外生成 NSIS 安装包，并复制到 `release/` 目录下，适合面向普通用户分发。

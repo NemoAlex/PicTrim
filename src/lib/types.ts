@@ -1,9 +1,27 @@
 export type OutputFormat = "jpg" | "png" | "webp" | "keep";
+export type ResizeMode = "fitLongestSide" | "fitBox" | "fitWidth" | "fitHeight" | "fixedCrop";
+export type Rotation = "auto" | "rotate0" | "rotate90" | "rotate180" | "rotate270";
+export type SourceKind = "file" | "directory" | "missing";
+export type CropHorizontal = "left" | "center" | "right";
+export type CropVertical = "top" | "center" | "bottom";
+
+export interface SourceEntry {
+  path: string;
+  kind: SourceKind;
+}
 
 export interface BatchSettings {
-  inputDir: string;
+  inputSources: string[];
   outputDir: string;
+  resizeMode: ResizeMode;
   maxSide: number;
+  width: number;
+  height: number;
+  allowUpscale: boolean;
+  cropHorizontal: CropHorizontal;
+  cropVertical: CropVertical;
+  rotation: Rotation;
+  thumbnail: boolean;
   quality: number;
   concurrency: number;
   outputFormat: OutputFormat;

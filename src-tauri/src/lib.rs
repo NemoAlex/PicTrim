@@ -1,9 +1,14 @@
-use rs_vips::{bindings, Vips, VipsImage, voption::{call, call_option_string, Setter, VOption}};
 use rayon::ThreadPoolBuilder;
+use rs_vips::{
+    bindings,
+    voption::{call, call_option_string, Setter, VOption},
+    Vips, VipsImage,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -52,12 +57,20 @@ struct JobHandle {
     cancel: Arc<AtomicBool>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BatchSettings {
-    input_dir: String,
+    input_sources: Vec<String>,
     output_dir: String,
+    resize_mode: ResizeMode,
     max_side: i32,
+    width: i32,
+    height: i32,
+    allow_upscale: bool,
+    crop_horizontal: CropHorizontal,
+    crop_vertical: CropVertical,
+    rotation: Rotation,
+    thumbnail: bool,
     quality: i32,
     concurrency: usize,
     output_format: OutputFormat,
@@ -72,6 +85,69 @@ enum OutputFormat {
     Png,
     Webp,
     Keep,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum ResizeMode {
+    FitLongestSide,
+    FitBox,
+    FitWidth,
+    FitHeight,
+    FixedCrop,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum CropHorizontal {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum CropVertical {
+    Top,
+    Center,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum Rotation {
+    Auto,
+    Rotate0,
+    Rotate90,
+    Rotate180,
+    Rotate270,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum SourceKind {
+    File,
+    Directory,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceEntry {
+    path: String,
+    kind: SourceKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourcePathKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone)]
+struct InputSource {
+    path: PathBuf,
+    kind: SourcePathKind,
 }
 
 #[derive(Debug, Clone)]
@@ -195,14 +271,118 @@ fn cancel_batch(state: tauri::State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn classify_sources(paths: Vec<String>) -> Vec<SourceEntry> {
+    paths
+        .into_iter()
+        .map(|path| {
+            let kind = classify_path(Path::new(&path))
+                .map(|kind| match kind {
+                    SourcePathKind::File => SourceKind::File,
+                    SourcePathKind::Directory => SourceKind::Directory,
+                })
+                .unwrap_or(SourceKind::Missing);
+            SourceEntry { path, kind }
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn load_settings(app: AppHandle) -> Result<Option<BatchSettings>, String> {
+    let path = settings_path(&app)?;
+    let data = match fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("读取设置失败: {err}")),
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&data).map_err(|err| format!("解析设置失败: {err}"))?;
+    let migrated = migrate_settings_value(value);
+    serde_json::from_value(migrated)
+        .map(Some)
+        .map_err(|err| format!("加载设置失败: {err}"))
+}
+
+#[tauri::command]
+fn save_settings(app: AppHandle, settings: BatchSettings) -> Result<(), String> {
+    let path = settings_path(&app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("创建设置目录失败: {err}"))?;
+    }
+    let data =
+        serde_json::to_string_pretty(&settings).map_err(|err| format!("序列化设置失败: {err}"))?;
+    fs::write(path, data).map_err(|err| format!("保存设置失败: {err}"))
+}
+
+fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join("settings.json"))
+        .map_err(|err| format!("定位设置目录失败: {err}"))
+}
+
+fn migrate_settings_value(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = value.as_object_mut() {
+        if !object.contains_key("inputSources") {
+            if let Some(input_dir) = object.remove("inputDir") {
+                let sources = input_dir
+                    .as_str()
+                    .filter(|path| !path.is_empty())
+                    .map(|path| vec![serde_json::Value::String(path.to_string())])
+                    .unwrap_or_default();
+                object.insert(
+                    "inputSources".to_string(),
+                    serde_json::Value::Array(sources),
+                );
+            }
+        }
+        object
+            .entry("resizeMode")
+            .or_insert_with(|| serde_json::Value::String("fitLongestSide".to_string()));
+        object
+            .entry("width")
+            .or_insert_with(|| serde_json::Value::Number(2000.into()));
+        object
+            .entry("height")
+            .or_insert_with(|| serde_json::Value::Number(2000.into()));
+        object
+            .entry("allowUpscale")
+            .or_insert_with(|| serde_json::Value::Bool(false));
+        object
+            .entry("cropHorizontal")
+            .or_insert_with(|| serde_json::Value::String("center".to_string()));
+        object
+            .entry("cropVertical")
+            .or_insert_with(|| serde_json::Value::String("center".to_string()));
+        object
+            .entry("rotation")
+            .or_insert_with(|| serde_json::Value::String("auto".to_string()));
+        object
+            .entry("thumbnail")
+            .or_insert_with(|| serde_json::Value::Bool(false));
+        if object
+            .get("resizeMode")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value == "fillCrop")
+        {
+            object.insert(
+                "resizeMode".to_string(),
+                serde_json::Value::String("fixedCrop".to_string()),
+            );
+        }
+    }
+    value
+}
+
 fn validate_settings(settings: &BatchSettings) -> Result<(), String> {
-    let input = Path::new(&settings.input_dir);
-    if !input.is_dir() {
-        return Err("输入目录不存在".to_string());
+    let sources = input_sources(settings)?;
+    if sources.is_empty() {
+        return Err("请选择输入来源".to_string());
     }
     if settings.output_dir.trim().is_empty() {
         return Err("请选择输出目录".to_string());
     }
+    validate_dimensions(settings)?;
     if settings.max_side < 1 || settings.max_side > 50000 {
         return Err("最长边必须在 1 到 50000 之间".to_string());
     }
@@ -212,10 +392,62 @@ fn validate_settings(settings: &BatchSettings) -> Result<(), String> {
     if settings.concurrency < 1 || settings.concurrency > 128 {
         return Err("并发数必须在 1 到 128 之间".to_string());
     }
-    if output_inside_input(input, Path::new(&settings.output_dir)) {
-        return Err("输出目录不能位于输入目录内部，请另选位置".to_string());
+    for source in sources
+        .iter()
+        .filter(|source| source.kind == SourcePathKind::Directory)
+    {
+        if output_inside_input(&source.path, Path::new(&settings.output_dir)) {
+            return Err("输出目录不能位于输入目录内部，请另选位置".to_string());
+        }
     }
     Ok(())
+}
+
+fn validate_dimensions(settings: &BatchSettings) -> Result<(), String> {
+    match settings.resize_mode {
+        ResizeMode::FitLongestSide => {
+            if settings.max_side < 1 || settings.max_side > 50000 {
+                return Err("最长边必须在 1 到 50000 之间".to_string());
+            }
+        }
+        ResizeMode::FitBox | ResizeMode::FixedCrop => {
+            if settings.width < 1 || settings.width > 50000 {
+                return Err("宽度必须在 1 到 50000 之间".to_string());
+            }
+            if settings.height < 1 || settings.height > 50000 {
+                return Err("高度必须在 1 到 50000 之间".to_string());
+            }
+        }
+        ResizeMode::FitWidth => {
+            if settings.width < 1 || settings.width > 50000 {
+                return Err("宽度必须在 1 到 50000 之间".to_string());
+            }
+        }
+        ResizeMode::FitHeight => {
+            if settings.height < 1 || settings.height > 50000 {
+                return Err("高度必须在 1 到 50000 之间".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn input_sources(settings: &BatchSettings) -> Result<Vec<InputSource>, String> {
+    let mut sources = Vec::with_capacity(settings.input_sources.len());
+    for source in &settings.input_sources {
+        let path = PathBuf::from(source);
+        let kind = classify_path(&path).ok_or_else(|| format!("输入来源不存在: {source}"))?;
+        sources.push(InputSource { path, kind });
+    }
+    Ok(sources)
+}
+
+fn classify_path(path: &Path) -> Option<SourcePathKind> {
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => Some(SourcePathKind::Directory),
+        Ok(meta) if meta.is_file() => Some(SourcePathKind::File),
+        _ => None,
+    }
 }
 
 fn output_inside_input(input: &Path, output: &Path) -> bool {
@@ -246,8 +478,16 @@ fn resolve_existing_ancestor(path: &Path) -> PathBuf {
 }
 
 fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -> bool {
-    let input_dir = PathBuf::from(&settings.input_dir);
     let output_dir = PathBuf::from(&settings.output_dir);
+    let sources = match input_sources(&settings) {
+        Ok(sources) => sources,
+        Err(err) => {
+            emit_error(&app, err);
+            return false;
+        }
+    };
+    let single_directory_source =
+        sources.len() == 1 && sources[0].kind == SourcePathKind::Directory;
 
     let _ = fs::create_dir_all(&output_dir);
 
@@ -269,7 +509,6 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
     let discovered = Arc::new(AtomicUsize::new(0));
     let last_emit = Arc::new(AtomicU64::new(0));
     let start = Instant::now();
-    let check_collisions = settings.output_format != OutputFormat::Keep;
     let collision_seen: Arc<Mutex<HashMap<PathBuf, PathBuf>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -287,59 +526,42 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
     let (tx, rx) = std::sync::mpsc::sync_channel(settings.concurrency * 4);
 
     let cancel_producer = cancel.clone();
-    let input_dir_producer = input_dir.clone();
     let output_dir_producer = output_dir.clone();
     let settings_producer = settings.clone();
     let producer = std::thread::spawn(move || {
-        for entry in WalkDir::new(&input_dir_producer)
-            .into_iter()
-            .filter_entry(|entry| {
-                if entry.depth() == 0 {
-                    return true;
-                }
-                !is_hidden_name(entry.file_name())
-            })
-        {
+        for source in sources {
             if cancel_producer.load(Ordering::Relaxed) {
                 break;
             }
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            if is_temp_output_name(entry.file_name()) {
-                continue;
-            }
-            let src = entry.path().to_path_buf();
-            let rel = match src.strip_prefix(&input_dir_producer) {
-                Ok(r) => r.to_path_buf(),
-                Err(_) => continue,
-            };
-            if rel
-                .components()
-                .any(|part| is_hidden_name(part.as_os_str()))
-            {
-                continue;
-            }
-            let is_image = is_supported_image(&src);
-            if is_image || settings_producer.copy_non_images {
-                let dst = if is_image {
-                    output_path(&output_dir_producer, &rel, settings_producer.output_format)
-                } else {
-                    output_dir_producer.join(&rel)
-                };
-                if tx.send(WorkItem {
-                    src,
-                    rel,
-                    dst,
-                    is_image,
-                })
-                .is_err()
-                {
+            match source.kind {
+                SourcePathKind::File => {
+                    if send_file_source(
+                        &tx,
+                        &source.path,
+                        file_rel(&source.path),
+                        &output_dir_producer,
+                        &settings_producer,
+                    ) {
+                        continue;
+                    }
                     break;
+                }
+                SourcePathKind::Directory => {
+                    let prefix = if single_directory_source {
+                        None
+                    } else {
+                        source.path.file_name().map(PathBuf::from)
+                    };
+                    if !send_directory_source(
+                        &tx,
+                        &source.path,
+                        prefix.as_deref(),
+                        &output_dir_producer,
+                        &settings_producer,
+                        &cancel_producer,
+                    ) {
+                        break;
+                    }
                 }
             }
         }
@@ -359,23 +581,22 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
 
                 discovered.fetch_add(1, Ordering::Relaxed);
 
-                if check_collisions {
-                    let mut seen = collision_seen.lock().expect("collision map poisoned");
-                    if let Some(previous) = seen.insert(item.dst.clone(), item.rel.clone()) {
-                        emit_error(
-                            &app,
-                            format!(
-                                "输出路径冲突: {} 和 {} 都会写入 {}。请改用保持原格式，或调整输入文件名。",
-                                previous.to_string_lossy(),
-                                item.rel.to_string_lossy(),
-                                item.dst.to_string_lossy()
-                            ),
-                        );
-                        drop(seen);
-                        cancelled.store(true, Ordering::Relaxed);
-                        break;
-                    }
+                let mut seen = collision_seen.lock().expect("collision map poisoned");
+                if let Some(previous) = seen.insert(item.dst.clone(), item.rel.clone()) {
+                    emit_error(
+                        &app,
+                        format!(
+                            "输出路径冲突: {} 和 {} 都会写入 {}。请调整输入文件名或输出位置。",
+                            previous.to_string_lossy(),
+                            item.rel.to_string_lossy(),
+                            item.dst.to_string_lossy()
+                        ),
+                    );
+                    drop(seen);
+                    cancelled.store(true, Ordering::Relaxed);
+                    break;
                 }
+                drop(seen);
 
                 let counters = counters.clone();
                 let discovered = discovered.clone();
@@ -395,12 +616,7 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
                     let last = last_emit.load(Ordering::Relaxed);
                     if elapsed.saturating_sub(last) >= PROGRESS_INTERVAL_MS
                         && last_emit
-                            .compare_exchange(
-                                last,
-                                elapsed,
-                                Ordering::Relaxed,
-                                Ordering::Relaxed,
-                            )
+                            .compare_exchange(last, elapsed, Ordering::Relaxed, Ordering::Relaxed)
                             .is_ok()
                     {
                         emit_progress(
@@ -447,6 +663,92 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
     let _ = app_done.emit("batch-failures", failures);
 
     is_cancelled
+}
+
+fn send_directory_source(
+    tx: &std::sync::mpsc::SyncSender<WorkItem>,
+    root: &Path,
+    prefix: Option<&Path>,
+    output_dir: &Path,
+    settings: &BatchSettings,
+    cancel: &AtomicBool,
+) -> bool {
+    for entry in WalkDir::new(root).into_iter().filter_entry(|entry| {
+        if entry.depth() == 0 {
+            return true;
+        }
+        !is_hidden_name(entry.file_name())
+    }) {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if is_temp_output_name(entry.file_name()) {
+            continue;
+        }
+        let src = entry.path().to_path_buf();
+        let inner_rel = match src.strip_prefix(root) {
+            Ok(rel) => rel,
+            Err(_) => continue,
+        };
+        if inner_rel
+            .components()
+            .any(|part| is_hidden_name(part.as_os_str()))
+        {
+            continue;
+        }
+        let rel = match prefix {
+            Some(prefix) => prefix.join(inner_rel),
+            None => inner_rel.to_path_buf(),
+        };
+        if !send_file_source(tx, &src, rel, output_dir, settings) {
+            return false;
+        }
+    }
+    true
+}
+
+fn send_file_source(
+    tx: &std::sync::mpsc::SyncSender<WorkItem>,
+    src: &Path,
+    rel: PathBuf,
+    output_dir: &Path,
+    settings: &BatchSettings,
+) -> bool {
+    if is_hidden_name(src.file_name().unwrap_or_else(|| OsStr::new(""))) {
+        return true;
+    }
+    if is_temp_output_name(src.file_name().unwrap_or_else(|| OsStr::new(""))) {
+        return true;
+    }
+    let is_image = is_supported_image(src);
+    if !is_image && !settings.copy_non_images {
+        return true;
+    }
+    let dst = if is_image {
+        output_path(output_dir, &rel, settings.output_format)
+    } else {
+        output_dir.join(&rel)
+    };
+    tx.send(WorkItem {
+        src: src.to_path_buf(),
+        rel,
+        dst,
+        is_image,
+    })
+    .is_ok()
+}
+
+fn file_rel(path: &Path) -> PathBuf {
+    path.file_name()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("file"))
 }
 
 #[derive(Debug)]
@@ -500,31 +802,27 @@ fn resize_image(src: &Path, dst: &Path, settings: &BatchSettings) -> Result<(u64
     let temp = temp_output_path(dst);
     {
         let load_source = thumbnail_load_source(src, settings.output_format);
-        let mut out = VipsImage::from(null_mut() as *mut bindings::VipsImage);
-        let result = call_option_string("thumbnail", "", VOption::new()
-            .set("filename", load_source.as_str())
-            .set("width", settings.max_side)
-            .set("height", settings.max_side)
-            .set("size", "down")
-            .set("no-rotate", false)
-            .set("import-profile", "srgb")
-            .set("export-profile", "srgb")
-            .set("out", &mut out))
-            .map_err(|e| format!("读取失败: {e} {}", vips_error_detail()))?;
-        if result < 0 {
-            return Err(format!("读取失败: {}", vips_error_detail()));
-        }
-        let mut image = out;
+        let mut image = match settings.resize_mode {
+            ResizeMode::FitLongestSide | ResizeMode::FitBox => {
+                thumbnail_image(&load_source, settings)?
+            }
+            ResizeMode::FitWidth | ResizeMode::FitHeight | ResizeMode::FixedCrop => {
+                manual_resize_image(src, settings)?
+            }
+        };
 
         let format = effective_output_format(src, settings.output_format);
         if format == OutputFormat::Jpg && image.hasalpha() {
             let mut flattened = VipsImage::from(null_mut() as *mut bindings::VipsImage);
             let bg = [255.0_f64, 255.0, 255.0];
-            let result = call("flatten", VOption::new()
-                .set("in", &image)
-                .set("background", &bg[..])
-                .set("out", &mut flattened))
-                .map_err(|e| format!("透明背景处理失败: {e} {}", vips_error_detail()))?;
+            let result = call(
+                "flatten",
+                VOption::new()
+                    .set("in", &image)
+                    .set("background", &bg[..])
+                    .set("out", &mut flattened),
+            )
+            .map_err(|e| format!("透明背景处理失败: {e} {}", vips_error_detail()))?;
             if result < 0 {
                 return Err(format!("透明背景处理失败: {}", vips_error_detail()));
             }
@@ -545,6 +843,166 @@ fn resize_image(src: &Path, dst: &Path, settings: &BatchSettings) -> Result<(u64
     Ok((src_bytes, file_size(dst)))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ResizeTarget {
+    width: i32,
+    height: i32,
+    size: &'static str,
+}
+
+fn resize_target(settings: &BatchSettings) -> ResizeTarget {
+    let (width, height) = match settings.resize_mode {
+        ResizeMode::FitLongestSide => (settings.max_side, settings.max_side),
+        ResizeMode::FitBox
+        | ResizeMode::FitWidth
+        | ResizeMode::FitHeight
+        | ResizeMode::FixedCrop => (settings.width, settings.height),
+    };
+    ResizeTarget {
+        width,
+        height,
+        size: if settings.allow_upscale {
+            "both"
+        } else {
+            "down"
+        },
+    }
+}
+
+fn thumbnail_image(load_source: &str, settings: &BatchSettings) -> Result<VipsImage, String> {
+    let target = resize_target(settings);
+    let mut out = VipsImage::from(null_mut() as *mut bindings::VipsImage);
+    let options = VOption::new()
+        .set("filename", load_source)
+        .set("width", target.width)
+        .set("height", target.height)
+        .set("size", target.size)
+        .set("no-rotate", settings.rotation != Rotation::Auto)
+        .set("import-profile", "srgb")
+        .set("export-profile", "srgb")
+        .set("out", &mut out);
+    let result = call_option_string("thumbnail", "", options)
+        .map_err(|e| format!("读取失败: {e} {}", vips_error_detail()))?;
+    if result < 0 {
+        return Err(format!("读取失败: {}", vips_error_detail()));
+    }
+    rotate_image(out, settings.rotation)
+}
+
+fn manual_resize_image(src: &Path, settings: &BatchSettings) -> Result<VipsImage, String> {
+    let mut image =
+        VipsImage::new_from_file(src).map_err(|e| format!("读取失败: {e} {}", vips_error_detail()))?;
+    if settings.rotation == Rotation::Auto {
+        image = image
+            .autorot()
+            .map_err(|e| format!("EXIF方向校正失败: {e} {}", vips_error_detail()))?;
+    } else {
+        image = rotate_image(image, settings.rotation)?;
+    }
+
+    let src_width = image.get_width().max(1) as f64;
+    let src_height = image.get_height().max(1) as f64;
+    let scale = match settings.resize_mode {
+        ResizeMode::FitWidth => settings.width as f64 / src_width,
+        ResizeMode::FitHeight => settings.height as f64 / src_height,
+        ResizeMode::FixedCrop => {
+            let scale_x = settings.width as f64 / src_width;
+            let scale_y = settings.height as f64 / src_height;
+            scale_x.max(scale_y) + 0.000001
+        }
+        ResizeMode::FitLongestSide | ResizeMode::FitBox => 1.0,
+    };
+    let scale = if settings.resize_mode == ResizeMode::FixedCrop || settings.allow_upscale {
+        scale
+    } else {
+        scale.min(1.0)
+    };
+    if (scale - 1.0).abs() > f64::EPSILON {
+        image = image
+            .resize(scale)
+            .map_err(|e| format!("缩放失败: {e} {}", vips_error_detail()))?;
+    }
+
+    if settings.resize_mode == ResizeMode::FixedCrop {
+        image = crop_to_target(image, settings)?;
+    }
+    Ok(image)
+}
+
+fn crop_to_target(image: VipsImage, settings: &BatchSettings) -> Result<VipsImage, String> {
+    let width = image.get_width();
+    let height = image.get_height();
+    let target_width = settings.width.min(width).max(1);
+    let target_height = settings.height.min(height).max(1);
+    let left = crop_offset(width - target_width, settings.crop_horizontal);
+    let top = crop_offset(height - target_height, settings.crop_vertical);
+    image
+        .crop(left, top, target_width, target_height)
+        .map_err(|e| format!("裁剪失败: {e} {}", vips_error_detail()))
+}
+
+fn crop_offset(extra: i32, position: impl CropPosition) -> i32 {
+    match position.anchor() {
+        CropAnchor::Start => 0,
+        CropAnchor::Center => extra / 2,
+        CropAnchor::End => extra,
+    }
+    .max(0)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CropAnchor {
+    Start,
+    Center,
+    End,
+}
+
+trait CropPosition {
+    fn anchor(self) -> CropAnchor;
+}
+
+impl CropPosition for CropHorizontal {
+    fn anchor(self) -> CropAnchor {
+        match self {
+            CropHorizontal::Left => CropAnchor::Start,
+            CropHorizontal::Center => CropAnchor::Center,
+            CropHorizontal::Right => CropAnchor::End,
+        }
+    }
+}
+
+impl CropPosition for CropVertical {
+    fn anchor(self) -> CropAnchor {
+        match self {
+            CropVertical::Top => CropAnchor::Start,
+            CropVertical::Center => CropAnchor::Center,
+            CropVertical::Bottom => CropAnchor::End,
+        }
+    }
+}
+
+fn rotate_image(image: VipsImage, rotation: Rotation) -> Result<VipsImage, String> {
+    let angle = match rotation {
+        Rotation::Auto | Rotation::Rotate0 => return Ok(image),
+        Rotation::Rotate90 => "d90",
+        Rotation::Rotate180 => "d180",
+        Rotation::Rotate270 => "d270",
+    };
+    let mut rotated = VipsImage::from(null_mut() as *mut bindings::VipsImage);
+    let result = call(
+        "rot",
+        VOption::new()
+            .set("in", &image)
+            .set("angle", angle)
+            .set("out", &mut rotated),
+    )
+    .map_err(|e| format!("旋转失败: {e} {}", vips_error_detail()))?;
+    if result < 0 {
+        return Err(format!("旋转失败: {}", vips_error_detail()));
+    }
+    Ok(rotated)
+}
+
 fn apply_result(counters: &Counters, item: &WorkItem, result: ItemResult) {
     counters.processed.fetch_add(1, Ordering::Relaxed);
     match result {
@@ -553,16 +1011,24 @@ fn apply_result(counters: &Counters, item: &WorkItem, result: ItemResult) {
             dst_bytes,
         } => {
             counters.images.fetch_add(1, Ordering::Relaxed);
-            counters.total_src_bytes.fetch_add(src_bytes, Ordering::Relaxed);
-            counters.total_dst_bytes.fetch_add(dst_bytes, Ordering::Relaxed);
+            counters
+                .total_src_bytes
+                .fetch_add(src_bytes, Ordering::Relaxed);
+            counters
+                .total_dst_bytes
+                .fetch_add(dst_bytes, Ordering::Relaxed);
         }
         ItemResult::Copied {
             src_bytes,
             dst_bytes,
         } => {
             counters.copied.fetch_add(1, Ordering::Relaxed);
-            counters.total_src_bytes.fetch_add(src_bytes, Ordering::Relaxed);
-            counters.total_dst_bytes.fetch_add(dst_bytes, Ordering::Relaxed);
+            counters
+                .total_src_bytes
+                .fetch_add(src_bytes, Ordering::Relaxed);
+            counters
+                .total_dst_bytes
+                .fetch_add(dst_bytes, Ordering::Relaxed);
         }
         ItemResult::Skipped => {
             counters.skipped.fetch_add(1, Ordering::Relaxed);
@@ -748,7 +1214,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![start_batch, cancel_batch])
+        .invoke_handler(tauri::generate_handler![
+            start_batch,
+            cancel_batch,
+            classify_sources,
+            load_settings,
+            save_settings
+        ])
         .run(tauri::generate_context!())
         .expect("error while running PicTrim");
 }
@@ -821,6 +1293,98 @@ mod tests {
     }
 
     #[test]
+    fn single_directory_source_keeps_legacy_relative_paths() {
+        let base = temp_test_dir("single-source");
+        let input = base.join("photos");
+        let output = base.join("out");
+        fs::create_dir_all(input.join("nested")).unwrap();
+        fs::write(input.join("nested").join("a.jpg"), b"not-real").unwrap();
+
+        let settings = test_settings(vec![input.to_string_lossy().to_string()], &output);
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        assert!(send_directory_source(
+            &tx,
+            &input,
+            None,
+            &output,
+            &settings,
+            &AtomicBool::new(false)
+        ));
+        drop(tx);
+
+        let item = rx.recv().unwrap();
+        assert_eq!(item.rel, PathBuf::from("nested/a.jpg"));
+        assert_eq!(item.dst, output.join("nested/a.jpg"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn mixed_sources_wrap_directories_and_keep_files_at_root() {
+        let base = temp_test_dir("mixed-source");
+        let input = base.join("photos");
+        let output = base.join("out");
+        let loose = base.join("loose.jpg");
+        fs::create_dir_all(&input).unwrap();
+        fs::write(input.join("a.jpg"), b"not-real").unwrap();
+        fs::write(&loose, b"not-real").unwrap();
+
+        let settings = test_settings(
+            vec![
+                input.to_string_lossy().to_string(),
+                loose.to_string_lossy().to_string(),
+            ],
+            &output,
+        );
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        assert!(send_directory_source(
+            &tx,
+            &input,
+            Some(Path::new("photos")),
+            &output,
+            &settings,
+            &AtomicBool::new(false)
+        ));
+        assert!(send_file_source(
+            &tx,
+            &loose,
+            file_rel(&loose),
+            &output,
+            &settings
+        ));
+        drop(tx);
+
+        let mut rels: Vec<PathBuf> = rx.iter().map(|item| item.rel).collect();
+        rels.sort();
+        assert_eq!(
+            rels,
+            vec![PathBuf::from("loose.jpg"), PathBuf::from("photos/a.jpg")]
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migrates_legacy_input_dir_setting() {
+        let value = serde_json::json!({
+            "inputDir": "/tmp/photos",
+            "outputDir": "/tmp/out",
+            "maxSide": 2000,
+            "quality": 85,
+            "concurrency": 4,
+            "outputFormat": "keep",
+            "copyNonImages": false,
+            "skipExisting": true
+        });
+
+        let migrated = migrate_settings_value(value);
+        let settings: BatchSettings = serde_json::from_value(migrated).unwrap();
+        assert_eq!(settings.input_sources, vec!["/tmp/photos"]);
+        assert_eq!(settings.resize_mode, ResizeMode::FitLongestSide);
+        assert_eq!(settings.rotation, Rotation::Auto);
+    }
+
+    #[test]
     fn resize_can_replace_source_file_through_temp_output() {
         Vips::init("PicTrimTest").expect("initialize libvips");
         Vips::concurrency_set(1);
@@ -835,9 +1399,17 @@ mod tests {
         fs::write(&image_path, ONE_BY_ONE_PNG).unwrap();
 
         let settings = BatchSettings {
-            input_dir: dir.to_string_lossy().to_string(),
+            input_sources: vec![dir.to_string_lossy().to_string()],
             output_dir: dir.to_string_lossy().to_string(),
+            resize_mode: ResizeMode::FitLongestSide,
             max_side: 1,
+            width: 1,
+            height: 1,
+            allow_upscale: false,
+            crop_horizontal: CropHorizontal::Center,
+            crop_vertical: CropVertical::Center,
+            rotation: Rotation::Auto,
+            thumbnail: false,
             quality: 85,
             concurrency: 1,
             output_format: OutputFormat::Keep,
@@ -855,4 +1427,33 @@ mod tests {
         0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3,
         2, 0, 239, 191, 167, 219, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
+
+    fn temp_test_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "pictrim-{label}-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    fn test_settings(input_sources: Vec<String>, output_dir: &Path) -> BatchSettings {
+        BatchSettings {
+            input_sources,
+            output_dir: output_dir.to_string_lossy().to_string(),
+            resize_mode: ResizeMode::FitLongestSide,
+            max_side: 2000,
+            width: 2000,
+            height: 2000,
+            allow_upscale: false,
+            crop_horizontal: CropHorizontal::Center,
+            crop_vertical: CropVertical::Center,
+            rotation: Rotation::Auto,
+            thumbnail: false,
+            quality: 85,
+            concurrency: 1,
+            output_format: OutputFormat::Keep,
+            copy_non_images: false,
+            skip_existing: true,
+        }
+    }
 }
