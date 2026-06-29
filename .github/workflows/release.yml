@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
@@ -36,10 +39,13 @@ jobs:
       - name: Verify release version
         shell: bash
         run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          export RELEASE_VERSION="${version}"
+          echo "RELEASE_VERSION=${version}" >> "${GITHUB_ENV}"
           node -e "const pkg=require('./package.json'); if (pkg.version !== process.env.RELEASE_VERSION) { throw new Error(`package.json version ${pkg.version} does not match ${process.env.RELEASE_VERSION}`) }"
           node -e "const cfg=require('./src-tauri/tauri.conf.json'); if (cfg.version !== process.env.RELEASE_VERSION) { throw new Error(`tauri.conf.json version ${cfg.version} does not match ${process.env.RELEASE_VERSION}`) }"
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -104,14 +110,16 @@ jobs:
       - name: Create GitHub Release
         shell: bash
         run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          draft="${INPUT_DRAFT:-true}"
           draft_flag=""
-          if [ "${DRAFT}" = "true" ]; then
+          if [ "${draft}" = "true" ]; then
             draft_flag="--draft"
           fi
 
-          gh release create "v${VERSION}" release-artifacts/* \
+          gh release create "v${version}" release-artifacts/* \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "PicTrim v${VERSION}" \
+            --title "PicTrim v${version}" \
             --notes-file - \
             ${draft_flag} <<'EOF'
           ## 下载
@@ -130,5 +138,5 @@ jobs:
           EOF
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-          DRAFT: ${{ inputs.draft }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_DRAFT: ${{ github.event.inputs.draft }}
