@@ -158,7 +158,8 @@ h2 {
 .shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* ---- Title bar ---- */
@@ -262,6 +263,7 @@ h2 {
   max-width: 920px;
   margin: 0 auto;
   padding: 20px 18px 28px;
+  min-height: 0;
 }
 
 .panel {
@@ -721,11 +723,13 @@ label > span {
 .content-run {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .content-run .log-panel {
   flex: 1;
   min-height: 150px;
+  overflow: hidden;
 }
 
 .content-run .log-panel .logs {
@@ -736,6 +740,19 @@ label > span {
 
 .log-panel {
   min-height: 0;
+}
+
+.error-panel {
+  flex: none;
+  max-height: 40%;
+  overflow: hidden;
+}
+
+.error-panel .failures {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 /* ---- Summary bar ---- */

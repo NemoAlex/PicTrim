@@ -58,7 +58,7 @@
 
   function addLog(message: string) {
     const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-    logs = [...logs, `[${time}] ${message}`].slice(-400);
+    logs = [...logs, `[${time}] ${message}`].slice(-100);
   }
 
   function handleFailures(entries: FailureEntry[]) {
