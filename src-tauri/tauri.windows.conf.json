@@ -1,6 +1,6 @@
 {
   "build": {
-    "beforeBundleCommand": "npm run stage-vips"
+    "beforeBuildCommand": "npm run build && npm run stage-vips"
   },
   "bundle": {
     "targets": ["nsis"],
