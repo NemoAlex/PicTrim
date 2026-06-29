@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import SettingsForm from "./components/SettingsForm.svelte";
+  import SummaryBar from "./components/SummaryBar.svelte";
   import ProgressStats from "./components/ProgressStats.svelte";
   import LogList from "./components/LogList.svelte";
   import FailureList from "./components/FailureList.svelte";
@@ -8,13 +9,15 @@
   import { cancelBatch, onFailures, onProgress, startBatch } from "./lib/tauri";
   import type { BatchProgress, BatchSettings, FailureEntry } from "./lib/types";
 
+  const DEFAULT_CONCURRENCY = navigator.hardwareConcurrency || 8;
+
   let settings = $state<BatchSettings>({
     inputDir: "",
     outputDir: "",
     maxSide: 2000,
     quality: 85,
-    concurrency: 20,
-    outputFormat: "jpg",
+    concurrency: DEFAULT_CONCURRENCY,
+    outputFormat: "keep",
     copyNonImages: false,
     skipExisting: true,
   });
@@ -42,6 +45,8 @@
               : "idle",
   );
 
+  let view = $derived(running || progress ? "run" : "config");
+
   onMount(() => {
     const unlisteners: Array<() => void> = [];
     onProgress(handleProgress).then((unlisten) => unlisteners.push(unlisten));
@@ -67,7 +72,7 @@
     progress = next;
     statusTitle = phaseTitle(next);
     statusMessage = next.message ?? "正在处理图片。";
-    currentFile = next.current ? `当前文件: ${next.current}` : "";
+    currentFile = next.current ?? "";
     addProgressLog(next);
     if (next.done || next.phase === "error") {
       running = false;
@@ -116,7 +121,7 @@
       ...settings,
       maxSide: toNumber(settings.maxSide, 2000),
       quality: toNumber(settings.quality, 85),
-      concurrency: toNumber(settings.concurrency, 20),
+      concurrency: toNumber(settings.concurrency, DEFAULT_CONCURRENCY),
     };
 
     addLog(
@@ -138,12 +143,29 @@
     addLog("正在停止，已开始的图片会先完成写入。");
     await cancelBatch();
   }
+
+  function handleReset() {
+    progress = null;
+    failures = [];
+    logs = [];
+    lastLogSignature = "";
+    statusTitle = "等待开始";
+    statusMessage = "等待开始。";
+    currentFile = "";
+  }
 </script>
 
 <main class="shell">
   <header class="titlebar">
     <div class="brand">
-      <div>
+      <div class="brand-mark">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="3" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <path d="M21 15l-5-5L5 21" />
+        </svg>
+      </div>
+      <div class="brand-text">
         <h1>PicTrim</h1>
         <p>批量缩放与格式转换</p>
       </div>
@@ -154,8 +176,16 @@
     </div>
   </header>
 
-  <SettingsForm bind:settings {running} onstart={handleStart} onstop={handleStop} />
-  <ProgressStats {statusMessage} {currentFile} {progress} />
-  <LogList {logs} />
-  <FailureList {failures} />
+  {#if view === "config"}
+    <div class="content content-config">
+      <SettingsForm bind:settings onstart={handleStart} />
+    </div>
+  {:else}
+    <div class="content content-run">
+      <SummaryBar {settings} {running} onstop={handleStop} onreset={handleReset} />
+      <ProgressStats {statusTitle} {statusMessage} {currentFile} {progress} {statusKind} />
+      <LogList {logs} />
+      <FailureList {failures} />
+    </div>
+  {/if}
 </main>

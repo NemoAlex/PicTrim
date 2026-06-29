@@ -12,7 +12,7 @@
   });
 </script>
 
-<section class="panel log-panel">
+<section class="panel panel-card log-panel">
   <div class="section-head">
     <h2>输出日志</h2>
   </div>

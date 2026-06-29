@@ -5,12 +5,10 @@
 </script>
 
 {#if failures.length > 0}
-  <section class="panel error-panel">
+  <section class="panel panel-card error-panel">
     <div class="section-head error-head">
-      <div>
-        <h2>错误列表</h2>
-        <p>{failures.length} 个文件处理失败。</p>
-      </div>
+      <h2>错误列表</h2>
+      <span>{failures.length} 个文件处理失败</span>
     </div>
     <div class="failures">
       {#each failures.slice(0, 500) as entry}
