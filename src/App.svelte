@@ -6,23 +6,33 @@
   import LogList from "./components/LogList.svelte";
   import FailureList from "./components/FailureList.svelte";
   import { formatLabel, phaseTitle, toNumber } from "./lib/format";
-  import { cancelBatch, onFailures, onProgress, startBatch } from "./lib/tauri";
+  import { cancelBatch, loadSettings, onFailures, onProgress, saveSettings, startBatch } from "./lib/tauri";
   import type { BatchProgress, BatchSettings, FailureEntry } from "./lib/types";
 
   const DEFAULT_CONCURRENCY = navigator.hardwareConcurrency || 8;
-
-  let settings = $state<BatchSettings>({
-    inputDir: "",
+  const DEFAULT_SETTINGS: BatchSettings = {
+    inputSources: [],
     outputDir: "",
+    resizeMode: "fitLongestSide",
     maxSide: 2000,
+    width: 2000,
+    height: 2000,
+    allowUpscale: false,
+    cropHorizontal: "center",
+    cropVertical: "center",
+    rotation: "auto",
+    thumbnail: false,
     quality: 85,
     concurrency: DEFAULT_CONCURRENCY,
     outputFormat: "keep",
     copyNonImages: false,
     skipExisting: true,
-  });
+  };
+
+  let settings = $state<BatchSettings>({ ...DEFAULT_SETTINGS });
 
   let running = $state(false);
+  let settingsLoaded = $state(false);
   let statusTitle = $state("等待开始");
   let statusMessage = $state("等待开始。");
   let currentFile = $state("");
@@ -46,15 +56,53 @@
   );
 
   let view = $derived(running || progress ? "run" : "config");
+  const startReady = $derived(settings.inputSources.length > 0 && Boolean(settings.outputDir));
+  let starting = $state(false);
+  let resetLocked = $state(false);
+  let resetLockTimer: number | undefined;
 
   onMount(() => {
     const unlisteners: Array<() => void> = [];
     onProgress(handleProgress).then((unlisten) => unlisteners.push(unlisten));
     onFailures(handleFailures).then((unlisten) => unlisteners.push(unlisten));
+    loadSettings()
+      .then((saved) => {
+        if (saved) settings = normalizeSettings(saved);
+      })
+      .catch((error) => addLog(`读取设置失败: ${String(error)}`))
+      .finally(() => {
+        settingsLoaded = true;
+      });
     return () => {
       for (const unlisten of unlisteners) unlisten();
     };
   });
+
+  $effect(() => {
+    const snapshot = JSON.stringify(settings);
+    if (!settingsLoaded) return;
+    const timer = window.setTimeout(() => {
+      saveSettings(JSON.parse(snapshot)).catch((error) => addLog(`保存设置失败: ${String(error)}`));
+    }, 350);
+    return () => window.clearTimeout(timer);
+  });
+
+  function normalizeSettings(saved: BatchSettings): BatchSettings {
+    const savedResizeMode = saved.resizeMode as string;
+    const resizeMode = saved.thumbnail || savedResizeMode === "fillCrop" ? "fixedCrop" : saved.resizeMode;
+    return {
+      ...DEFAULT_SETTINGS,
+      ...saved,
+      inputSources: Array.isArray(saved.inputSources) ? saved.inputSources : [],
+      resizeMode,
+      thumbnail: false,
+      concurrency: toNumber(saved.concurrency, DEFAULT_CONCURRENCY),
+      maxSide: toNumber(saved.maxSide, DEFAULT_SETTINGS.maxSide),
+      width: toNumber(saved.width, DEFAULT_SETTINGS.width),
+      height: toNumber(saved.height, DEFAULT_SETTINGS.height),
+      quality: toNumber(saved.quality, DEFAULT_SETTINGS.quality),
+    };
+  }
 
   function addLog(message: string) {
     const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -104,14 +152,22 @@
   }
 
   async function handleStart() {
-    if (!settings.inputDir || !settings.outputDir) {
-      statusTitle = "目录未选择";
-      statusMessage = "请先选择输入目录和输出目录。";
-      addLog("请先选择输入目录和输出目录。");
+    if (starting || running) return;
+    if (settings.inputSources.length === 0 || !settings.outputDir) {
+      statusTitle = "来源未选择";
+      statusMessage = "请先选择输入来源和输出目录。";
+      addLog("请先选择输入来源和输出目录。");
       return;
     }
 
+    starting = true;
     running = true;
+    resetLocked = true;
+    if (resetLockTimer) window.clearTimeout(resetLockTimer);
+    resetLockTimer = window.setTimeout(() => {
+      resetLocked = false;
+      resetLockTimer = undefined;
+    }, 1000);
     logs = [];
     lastLogSignature = "";
     failures = [];
@@ -120,12 +176,14 @@
     const payload: BatchSettings = {
       ...settings,
       maxSide: toNumber(settings.maxSide, 2000),
+      width: toNumber(settings.width, 2000),
+      height: toNumber(settings.height, 2000),
       quality: toNumber(settings.quality, 85),
       concurrency: toNumber(settings.concurrency, DEFAULT_CONCURRENCY),
     };
 
     addLog(
-      `开始处理: 最长边 ${payload.maxSide} px, 质量 ${payload.quality}%, 并发 ${payload.concurrency}, 格式 ${formatLabel(payload.outputFormat)}。`,
+      `开始处理: 来源 ${payload.inputSources.length} 个, 质量 ${payload.quality}%, 并发 ${payload.concurrency}, 格式 ${formatLabel(payload.outputFormat)}。`,
     );
 
     try {
@@ -135,6 +193,8 @@
       statusTitle = "无法开始";
       statusMessage = String(error);
       addLog(`无法开始: ${String(error)}`);
+    } finally {
+      starting = false;
     }
   }
 
@@ -156,36 +216,37 @@
 </script>
 
 <main class="shell">
-  <header class="titlebar">
-    <div class="brand">
-      <div class="brand-mark">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="3" width="18" height="18" rx="3" />
-          <circle cx="8.5" cy="8.5" r="1.5" />
-          <path d="M21 15l-5-5L5 21" />
-        </svg>
-      </div>
-      <div class="brand-text">
-        <h1>PicTrim</h1>
-        <p>批量缩放与格式转换</p>
-      </div>
-    </div>
-    <div class="status-pill">
-      <span class="status-dot {statusKind}"></span>
-      <span>{statusTitle}</span>
-    </div>
-  </header>
-
   {#if view === "config"}
     <div class="content content-config">
-      <SettingsForm bind:settings onstart={handleStart} />
+      <SettingsForm bind:settings />
     </div>
   {:else}
     <div class="content content-run">
-      <SummaryBar {settings} {running} onstop={handleStop} onreset={handleReset} />
+      <SummaryBar {settings} />
       <ProgressStats {statusTitle} {statusMessage} {currentFile} {progress} {statusKind} />
       <LogList {logs} />
       <FailureList {failures} />
     </div>
   {/if}
+
+  <footer class="bottombar">
+    <div class="bottombar-inner">
+      {#if view === "config"}
+        <button class="primary bottombar-action bottombar-action-primary" onclick={handleStart} disabled={!startReady || starting}>
+          {starting ? "正在开始…" : "开始处理"}
+        </button>
+      {/if}
+      {#if view === "run" && !running}
+        <button class="secondary bottombar-action" onclick={handleReset} disabled={resetLocked}>
+          返回
+        </button>
+      {/if}
+      {#if view === "run" && running}
+        <button class="secondary danger bottombar-action" onclick={handleStop} disabled={resetLocked}>
+          停止
+        </button>
+      {/if}
+      <div class="bottombar-spacer"></div>
+    </div>
+  </footer>
 </main>

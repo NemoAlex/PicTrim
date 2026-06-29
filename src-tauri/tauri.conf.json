@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "PicTrim",
-        "width": 1080,
-        "height": 760,
-        "minWidth": 940,
-        "minHeight": 660
+        "width": 1040,
+        "height": 720,
+        "minWidth": 1040,
+        "minHeight": 720
       }
     ],
     "security": {
