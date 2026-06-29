@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example 0.1.0"
+        required: true
+        type: string
+      draft:
+        description: "Create the GitHub Release as a draft"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          node -e "const pkg=require('./package.json'); if (pkg.version !== process.env.RELEASE_VERSION) { throw new Error(`package.json version ${pkg.version} does not match ${process.env.RELEASE_VERSION}`) }"
+          node -e "const cfg=require('./src-tauri/tauri.conf.json'); if (cfg.version !== process.env.RELEASE_VERSION) { throw new Error(`tauri.conf.json version ${cfg.version} does not match ${process.env.RELEASE_VERSION}`) }"
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install vips
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install libvips:x64-windows
+          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+
+      - name: Build release artifacts
+        run: npm run tauri:build
+
+      - name: Package release artifacts
+        run: npm run release:package
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PicTrim-${{ matrix.name }}
+          path: |
+            release/*.zip
+            release/*.exe
+            release/*.dmg
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        shell: bash
+        run: |
+          cd release-artifacts
+          find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.exe' -o -name '*.dmg' \) -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sed 's#  ./#  #' > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          draft_flag=""
+          if [ "${DRAFT}" = "true" ]; then
+            draft_flag="--draft"
+          fi
+
+          gh release create "v${VERSION}" release-artifacts/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "PicTrim v${VERSION}" \
+            --notes-file - \
+            ${draft_flag} <<'EOF'
+          ## 下载
+
+          - Windows：下载 installer 或 portable zip。
+          - macOS：下载 portable zip。
+
+          ## 安全提示
+
+          这些构建未进行代码签名。macOS 或 Windows 首次打开时可能显示安全提示。
+
+          如需校验下载文件，请对照本 release 附带的 `SHA256SUMS.txt`。
+
+          Windows 用户可能需要在 SmartScreen 中选择“更多信息”，然后选择“仍要运行”。
+          macOS 用户可能需要首次尝试打开后，到“系统设置 > 隐私与安全性”中允许打开。
+          EOF
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          DRAFT: ${{ inputs.draft }}
