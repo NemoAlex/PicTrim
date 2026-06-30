@@ -1,4 +1,6 @@
 fn main() {
+    println!("cargo:rerun-if-changed=icons");
+
     #[cfg(not(target_os = "windows"))]
     {
         pkg_config::Config::new()

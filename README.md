@@ -1,4 +1,6 @@
-# PicTrim
+<p>
+  <img src="docs/pictrim-logo.png" alt="PicTrim - Ultra-fast image processing tool" width="360">
+</p>
 
 PicTrim 是一个高性能的图片批处理工具。支持对图片进行批量缩放、压缩、旋转和格式转换。
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import SettingsForm from "./components/SettingsForm.svelte";
   import SummaryBar from "./components/SummaryBar.svelte";
   import ProgressStats from "./components/ProgressStats.svelte";
@@ -60,11 +60,19 @@
   let starting = $state(false);
   let resetLocked = $state(false);
   let resetLockTimer: number | undefined;
+  let configContentEl = $state<HTMLDivElement>();
+  let scrollIndicatorVisible = $state(false);
+  let scrollIndicatorNeeded = $state(false);
+  let scrollThumbTop = $state(0);
+  let scrollThumbHeight = $state(48);
+  let scrollHideTimer: number | undefined;
 
   onMount(() => {
     const unlisteners: Array<() => void> = [];
+    const handleResize = () => updateScrollIndicator();
     onProgress(handleProgress).then((unlisten) => unlisteners.push(unlisten));
     onFailures(handleFailures).then((unlisten) => unlisteners.push(unlisten));
+    window.addEventListener("resize", handleResize);
     loadSettings()
       .then((saved) => {
         if (saved) settings = normalizeSettings(saved);
@@ -75,6 +83,8 @@
       });
     return () => {
       for (const unlisten of unlisteners) unlisten();
+      window.removeEventListener("resize", handleResize);
+      if (scrollHideTimer) window.clearTimeout(scrollHideTimer);
     };
   });
 
@@ -85,6 +95,13 @@
       saveSettings(JSON.parse(snapshot)).catch((error) => addLog(`保存设置失败: ${String(error)}`));
     }, 350);
     return () => window.clearTimeout(timer);
+  });
+
+  $effect(() => {
+    view;
+    settings.inputSources.length;
+    showScrollIndicator(false);
+    tick().then(() => updateScrollIndicator());
   });
 
   function normalizeSettings(saved: BatchSettings): BatchSettings {
@@ -213,12 +230,49 @@
     statusMessage = "等待开始。";
     currentFile = "";
   }
+
+  function updateScrollIndicator() {
+    if (!configContentEl || view !== "config") {
+      scrollIndicatorNeeded = false;
+      return;
+    }
+
+    const { clientHeight, scrollHeight, scrollTop } = configContentEl;
+    scrollIndicatorNeeded = scrollHeight > clientHeight + 1;
+    if (!scrollIndicatorNeeded) {
+      scrollIndicatorVisible = false;
+      return;
+    }
+
+    scrollThumbHeight = Math.max(48, (clientHeight / scrollHeight) * clientHeight);
+    scrollThumbTop = ((clientHeight - scrollThumbHeight) * scrollTop) / (scrollHeight - clientHeight);
+  }
+
+  function showScrollIndicator(autoHide = true) {
+    updateScrollIndicator();
+    if (!scrollIndicatorNeeded) return;
+    scrollIndicatorVisible = true;
+    if (scrollHideTimer) window.clearTimeout(scrollHideTimer);
+    if (autoHide) {
+      scrollHideTimer = window.setTimeout(() => {
+        scrollIndicatorVisible = false;
+        scrollHideTimer = undefined;
+      }, 900);
+    }
+  }
 </script>
 
 <main class="shell">
   {#if view === "config"}
-    <div class="content content-config">
-      <SettingsForm bind:settings />
+    <div class="content-scroll-frame" role="presentation" onpointerenter={() => showScrollIndicator(false)} onpointerleave={() => (scrollIndicatorVisible = false)}>
+      <div bind:this={configContentEl} class="content content-config" onscroll={() => showScrollIndicator()}>
+        <SettingsForm bind:settings />
+      </div>
+      {#if scrollIndicatorNeeded}
+        <div class:visible={scrollIndicatorVisible} class="scroll-indicator" aria-hidden="true">
+          <span style={`height: ${scrollThumbHeight}px; transform: translateY(${scrollThumbTop}px);`}></span>
+        </div>
+      {/if}
     </div>
   {:else}
     <div class="content content-run">
