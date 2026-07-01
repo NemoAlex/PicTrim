@@ -6,7 +6,7 @@
 
 PicTrim 是一个高性能的图片批处理工具。支持对图片进行批量缩放、压缩、旋转和格式转换。
 
-![PicTrim 界面截图](docs/pictrim-screenshot.png)
+![PicTrim 界面截图](docs/pictrim-screenshot-zh-CN.png)
 
 ## 功能
 

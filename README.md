@@ -6,7 +6,7 @@
 
 PicTrim is a high-performance batch image processing tool for resizing, compressing, rotating, and converting images.
 
-![PicTrim screenshot](docs/pictrim-screenshot.png)
+![PicTrim screenshot](docs/pictrim-screenshot-en.png)
 
 ## Features
 
