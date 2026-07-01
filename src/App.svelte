@@ -5,7 +5,9 @@
   import ProgressStats from "./components/ProgressStats.svelte";
   import LogList from "./components/LogList.svelte";
   import FailureList from "./components/FailureList.svelte";
-  import { formatLabel, phaseTitle, toNumber } from "./lib/format";
+  import { toNumber } from "./lib/format";
+  import { getCopy, locale, localizeBackendMessage, outputFormatLabel, phaseTitle, setLanguage, syncDocumentLanguage } from "./lib/i18n.svelte";
+  import type { Language } from "./lib/i18n.svelte";
   import { cancelBatch, loadSettings, onFailures, onProgress, saveSettings, startBatch } from "./lib/tauri";
   import type { BatchProgress, BatchSettings, FailureEntry } from "./lib/types";
 
@@ -33,8 +35,9 @@
 
   let running = $state(false);
   let settingsLoaded = $state(false);
-  let statusTitle = $state("等待开始");
-  let statusMessage = $state("等待开始。");
+  const copy = $derived(getCopy());
+  let statusTitle = $state("");
+  let statusMessage = $state("");
   let currentFile = $state("");
   let progress = $state<BatchProgress | null>(null);
   let failures = $state<FailureEntry[]>([]);
@@ -66,8 +69,10 @@
   let scrollThumbTop = $state(0);
   let scrollThumbHeight = $state(48);
   let scrollHideTimer: number | undefined;
+  let languageMenuOpen = $state(false);
 
   onMount(() => {
+    syncDocumentLanguage();
     const unlisteners: Array<() => void> = [];
     const handleResize = () => updateScrollIndicator();
     onProgress(handleProgress).then((unlisten) => unlisteners.push(unlisten));
@@ -77,7 +82,7 @@
       .then((saved) => {
         if (saved) settings = normalizeSettings(saved);
       })
-      .catch((error) => addLog(`读取设置失败: ${String(error)}`))
+      .catch((error) => addLog(copy.readSettingsFailed(String(error))))
       .finally(() => {
         settingsLoaded = true;
       });
@@ -92,9 +97,20 @@
     const snapshot = JSON.stringify(settings);
     if (!settingsLoaded) return;
     const timer = window.setTimeout(() => {
-      saveSettings(JSON.parse(snapshot)).catch((error) => addLog(`保存设置失败: ${String(error)}`));
+      saveSettings(JSON.parse(snapshot)).catch((error) => addLog(copy.saveSettingsFailed(String(error))));
     }, 350);
     return () => window.clearTimeout(timer);
+  });
+
+  $effect(() => {
+    copy;
+    if (!progress) {
+      statusTitle = copy.waitTitle;
+      statusMessage = copy.waitMessage;
+      return;
+    }
+    statusTitle = phaseTitle(progress, copy);
+    statusMessage = progress.message ? localizeBackendMessage(progress.message, copy) : copy.processingImages;
   });
 
   $effect(() => {
@@ -129,14 +145,14 @@
   function handleFailures(entries: FailureEntry[]) {
     failures = entries;
     if (entries.length > 0) {
-      addLog(`发现 ${entries.length} 个错误，已更新错误列表。`);
+      addLog(copy.failureListUpdated(entries.length));
     }
   }
 
   function handleProgress(next: BatchProgress) {
     progress = next;
-    statusTitle = phaseTitle(next);
-    statusMessage = next.message ?? "正在处理图片。";
+    statusTitle = phaseTitle(next, copy);
+    statusMessage = next.message ? localizeBackendMessage(next.message, copy) : copy.processingImages;
     currentFile = next.current ?? "";
     addProgressLog(next);
     if (next.done || next.phase === "error") {
@@ -145,18 +161,18 @@
   }
 
   function addProgressLog(next: BatchProgress) {
-    const label = phaseTitle(next);
-    const message = next.current ?? next.message ?? "";
+    const label = phaseTitle(next, copy);
+    const message = next.current ?? (next.message ? localizeBackendMessage(next.message, copy) : "");
     const signature = `${next.phase}|${next.processed}|${next.discovered}|${message}|${next.done}|${next.cancelled}`;
     if (signature === lastLogSignature) return;
 
     lastLogSignature = signature;
     if (next.done) {
-      addLog(next.cancelled ? "处理已停止。" : "处理完成。");
+      addLog(next.cancelled ? copy.processingStopped : copy.processingDone);
       return;
     }
     if (next.phase === "scanning") {
-      addLog(next.message ?? "正在扫描输入目录。");
+      addLog(next.message ? localizeBackendMessage(next.message, copy) : copy.scanningInput);
       return;
     }
     if (next.current) {
@@ -164,16 +180,16 @@
       return;
     }
     if (next.message) {
-      addLog(next.message);
+      addLog(localizeBackendMessage(next.message, copy));
     }
   }
 
   async function handleStart() {
     if (starting || running) return;
     if (settings.inputSources.length === 0 || !settings.outputDir) {
-      statusTitle = "来源未选择";
-      statusMessage = "请先选择输入来源和输出目录。";
-      addLog("请先选择输入来源和输出目录。");
+      statusTitle = copy.sourceMissingTitle;
+      statusMessage = copy.sourceMissingMessage;
+      addLog(copy.sourceMissingMessage);
       return;
     }
 
@@ -200,25 +216,38 @@
     };
 
     addLog(
-      `开始处理: 来源 ${payload.inputSources.length} 个, 质量 ${payload.quality}%, 并发 ${payload.concurrency}, 格式 ${formatLabel(payload.outputFormat)}。`,
+      copy.startLog(payload.inputSources.length, payload.quality, payload.concurrency, outputFormatLabel(payload.outputFormat, copy)),
     );
 
     try {
       await startBatch(payload);
     } catch (error) {
       running = false;
-      statusTitle = "无法开始";
-      statusMessage = String(error);
-      addLog(`无法开始: ${String(error)}`);
+      statusTitle = copy.startFailedTitle;
+      const message = localizeBackendMessage(String(error), copy);
+      statusMessage = message;
+      addLog(copy.startFailedLog(message));
     } finally {
       starting = false;
     }
   }
 
   async function handleStop() {
-    statusMessage = "正在停止，已开始的图片会先完成写入。";
-    addLog("正在停止，已开始的图片会先完成写入。");
+    statusMessage = copy.stoppingMessage;
+    addLog(copy.stoppingMessage);
     await cancelBatch();
+  }
+
+  function chooseLanguage(language: Language) {
+    setLanguage(language);
+    languageMenuOpen = false;
+  }
+
+  function closeLanguageMenuOnOutsideClick(event: MouseEvent) {
+    if (!languageMenuOpen) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest(".language-menu-wrap")) return;
+    languageMenuOpen = false;
   }
 
   function handleReset() {
@@ -226,8 +255,8 @@
     failures = [];
     logs = [];
     lastLogSignature = "";
-    statusTitle = "等待开始";
-    statusMessage = "等待开始。";
+    statusTitle = copy.waitTitle;
+    statusMessage = copy.waitMessage;
     currentFile = "";
   }
 
@@ -262,11 +291,15 @@
   }
 </script>
 
+<svelte:window onclick={closeLanguageMenuOnOutsideClick} onkeydown={(event) => {
+  if (event.key === "Escape") languageMenuOpen = false;
+}} />
+
 <main class="shell">
   {#if view === "config"}
     <div class="content-scroll-frame" role="presentation" onpointerenter={() => showScrollIndicator(false)} onpointerleave={() => (scrollIndicatorVisible = false)}>
       <div bind:this={configContentEl} class="content content-config" onscroll={() => showScrollIndicator()}>
-        <SettingsForm bind:settings />
+        <SettingsForm bind:settings {copy} />
       </div>
       {#if scrollIndicatorNeeded}
         <div class:visible={scrollIndicatorVisible} class="scroll-indicator" aria-hidden="true">
@@ -276,10 +309,10 @@
     </div>
   {:else}
     <div class="content content-run">
-      <SummaryBar {settings} />
-      <ProgressStats {statusTitle} {statusMessage} {currentFile} {progress} {statusKind} />
-      <LogList {logs} />
-      <FailureList {failures} />
+      <SummaryBar {settings} {copy} />
+      <ProgressStats {statusTitle} {statusMessage} {currentFile} {progress} {statusKind} {copy} />
+      <LogList {logs} {copy} />
+      <FailureList {failures} {copy} />
     </div>
   {/if}
 
@@ -287,20 +320,51 @@
     <div class="bottombar-inner">
       {#if view === "config"}
         <button class="primary bottombar-action bottombar-action-primary" onclick={handleStart} disabled={!startReady || starting}>
-          {starting ? "正在开始…" : "开始处理"}
+          {starting ? copy.startingButton : copy.startButton}
         </button>
       {/if}
       {#if view === "run" && !running}
         <button class="secondary bottombar-action" onclick={handleReset} disabled={resetLocked}>
-          返回
+          {copy.backButton}
         </button>
       {/if}
       {#if view === "run" && running}
         <button class="secondary danger bottombar-action" onclick={handleStop} disabled={resetLocked}>
-          停止
+          {copy.stopButton}
         </button>
       {/if}
       <div class="bottombar-spacer"></div>
+      <div class="language-menu-wrap">
+        <button
+          class:open={languageMenuOpen}
+          class="language-toggle"
+          onclick={() => (languageMenuOpen = !languageMenuOpen)}
+          aria-haspopup="menu"
+          aria-expanded={languageMenuOpen}
+          aria-label={copy.languageName}
+          title={copy.languageName}
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M2 12h20" />
+            <path d="M12 2a15.3 15.3 0 0 1 0 20" />
+            <path d="M12 2a15.3 15.3 0 0 0 0 20" />
+          </svg>
+          <span>{copy.languageName}</span>
+        </button>
+        {#if languageMenuOpen}
+          <div class="language-menu" role="menu">
+            <button class:active={locale.language === "en"} role="menuitemradio" aria-checked={locale.language === "en"} onclick={() => chooseLanguage("en")}>
+              <span>English</span>
+              <span class="language-check">✓</span>
+            </button>
+            <button class:active={locale.language === "zh"} role="menuitemradio" aria-checked={locale.language === "zh"} onclick={() => chooseLanguage("zh")}>
+              <span>中文</span>
+              <span class="language-check">✓</span>
+            </button>
+          </div>
+        {/if}
+      </div>
     </div>
   </footer>
 </main>

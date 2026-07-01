@@ -1,5 +1,6 @@
 <script lang="ts">
   import { formatBytes } from "../lib/format";
+  import type { Copy } from "../lib/i18n.svelte";
   import type { BatchProgress } from "../lib/types";
 
   let {
@@ -8,12 +9,14 @@
     currentFile,
     progress,
     statusKind,
+    copy,
   }: {
     statusTitle: string;
     statusMessage: string;
     currentFile: string;
     progress: BatchProgress | null;
     statusKind: string;
+    copy: Copy;
   } = $props();
 
   const percent = $derived.by(() => {
@@ -74,7 +77,7 @@
       </div>
       <div class="size-saved {savedPct >= 0 ? 'good' : 'bad'}">
         <strong>{Math.abs(savedPct)}%</strong>
-        <span>{savedPct >= 0 ? "已节省" : "增大"}</span>
+        <span>{savedPct >= 0 ? copy.saved : copy.increased}</span>
       </div>
     </div>
   {/if}
@@ -86,7 +89,7 @@
         <circle cx="8.5" cy="8.5" r="1.5" />
         <path d="M21 15l-5-5L5 21" />
       </svg>
-      <span class="m-label">生成图片</span>
+      <span class="m-label">{copy.generatedImages}</span>
       <b>{images}</b>
     </span>
     {#if copied > 0}
@@ -95,7 +98,7 @@
           <rect x="9" y="9" width="11" height="11" rx="2" />
           <path d="M5 15V5a2 2 0 0 1 2-2h10" />
         </svg>
-        <span class="m-label">复制</span>
+        <span class="m-label">{copy.copied}</span>
         <b>{copied}</b>
       </span>
     {/if}
@@ -103,7 +106,7 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M5 4l8 8-8 8M15 4l4 8-4 8" />
       </svg>
-      <span class="m-label">跳过</span>
+      <span class="m-label">{copy.skipped}</span>
       <b>{skipped}</b>
     </span>
     <span class="metric {failed > 0 ? 'bad' : ''}">
@@ -111,7 +114,7 @@
         <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
         <path d="M12 9v4M12 17h.01" />
       </svg>
-      <span class="m-label">失败</span>
+      <span class="m-label">{copy.failed}</span>
       <b>{failed}</b>
     </span>
   </div>

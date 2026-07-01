@@ -2,77 +2,79 @@
   <img src="docs/pictrim-logo.png" alt="PicTrim - Ultra-fast image processing tool" width="360">
 </p>
 
-PicTrim 是一个高性能的图片批处理工具。支持对图片进行批量缩放、压缩、旋转和格式转换。
+[中文](README.zh-CN.md)
 
-![PicTrim 界面截图](docs/pictrim-screenshot.png)
+PicTrim is a high-performance batch image processing tool for resizing, compressing, rotating, and converting images.
 
-## 功能
+![PicTrim screenshot](docs/pictrim-screenshot.png)
 
-- 支持图片文件和目录混合输入，也可以直接拖拽。
-- 支持按最长边、指定宽高、固定裁剪等方式批量缩放。
-- 支持 JPG、PNG、WebP 输出，也可以保持原格式。
-- 支持质量、旋转、并发数、是否放大、是否跳过已有文件等常用选项。
-- 保留目录结构，实时显示进度、统计和失败列表。
+## Features
 
-## 性能
+- Mix image files and folders as input, or drag them directly into the app.
+- Batch resize by longest side, bounding box, fixed crop, width, or height.
+- Export JPG, PNG, and WebP, or keep the original format.
+- Configure quality, rotation, concurrency, upscaling, existing-file handling, and non-image file handling.
+- Preserve folder structure while showing live progress, stats, logs, and failures.
 
-- 本项目的核心目标是打造最高性能的图片批量处理工具。
-- 底层使用 Rust 和 libvips，处理速度快、内存占用低。
-- 使用流式任务队列 + 多线程并发处理，轻松处理千万级数量的图片。
-- 支持跳过已存在的输出文件，便于重复运行和增量处理。
+## Performance
 
-## 使用
+- PicTrim is built to be an extremely fast batch image processing tool.
+- The core uses Rust and libvips for high throughput and low memory usage.
+- A streaming task queue plus multithreaded processing makes very large image sets practical.
+- Existing output files can be skipped, which is useful for repeated or incremental runs.
 
-1. 添加图片文件或文件夹。
-2. 选择输出目录。
-3. 设置尺寸、格式、质量和批处理选项。
-4. 点击“开始处理”。
+## Usage
 
-## 系统支持
+1. Add image files or folders.
+2. Choose an output folder.
+3. Set the size, format, quality, and batch options.
+4. Click "Start".
+
+## Platform Support
 
 - macOS
-- Windows 10 / Windows 11 64 位
+- Windows 10 / Windows 11 64-bit
 
-当前发布构建面向 macOS 和 Windows x64。Linux 暂未提供打包支持。
+Current release builds target macOS and Windows x64. Linux packages are not provided yet.
 
-## 开发
+## Development
 
 ```bash
 npm install
 npm run dev
 ```
 
-检查前端构建：
+Check the frontend build:
 
 ```bash
 npm run build
 ```
 
-检查 Rust 部分：
+Check the Rust side:
 
 ```bash
 cd src-tauri
 cargo check
 ```
 
-编译或链接 Rust 二进制文件需要在本机安装 libvips。
+Building or linking the Rust binary requires libvips to be installed locally.
 
-macOS：
+macOS:
 
 ```bash
 brew install vips
 ```
 
-Windows 推荐使用 libvips 官方预编译包，并设置 `VIPS_DIR` 指向解压后的目录：
+On Windows, use the official prebuilt libvips package and set `VIPS_DIR` to the extracted folder:
 
 ```powershell
 $env:VIPS_DIR = "C:\path\to\vips-dev-8.x"
 $env:Path = "$env:VIPS_DIR\bin;$env:Path"
 ```
 
-也可以参考 [libvips 官方安装说明](https://www.libvips.org/install.html)。
+You can also refer to the [official libvips installation guide](https://www.libvips.org/install.html).
 
-## 构建
+## Build
 
 ```bash
 npm install
@@ -80,10 +82,10 @@ npm run tauri:build
 npm run release:package
 ```
 
-构建完成后，`release/PicTrim/` 目录即为便携版产物。Windows 会额外生成 NSIS 安装包并复制到 `release/` 目录。`npm run release:package` 会生成便携版 zip 和 `SHA256SUMS.txt`，用于 GitHub Releases。
+After the build finishes, `release/PicTrim/` contains the portable build. Windows builds also create an NSIS installer and copy it into `release/`. `npm run release:package` generates the portable zip and `SHA256SUMS.txt` for GitHub Releases.
 
-## 发布说明
+## Release Notes
 
-当前 GitHub Releases 提供未签名的二进制文件。macOS 或 Windows 首次打开时可能显示安全提示。请从项目 Releases 页面下载，并使用随 release 附带的 `SHA256SUMS.txt` 校验文件完整性。
+Current GitHub Releases provide unsigned binaries. macOS or Windows may show a security warning on first launch. Download from the project Releases page and verify file integrity with the bundled `SHA256SUMS.txt`.
 
-更详细的发布步骤见 [docs/release.md](docs/release.md)。
+See [docs/release.md](docs/release.md) for the detailed release workflow.

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCopy } from "./i18n.svelte";
 import type { BatchProgress, BatchSettings, FailureEntry, SourceEntry } from "./types";
 
 export function startBatch(settings: BatchSettings): Promise<void> {
@@ -25,28 +26,31 @@ export function classifySources(paths: string[]): Promise<SourceEntry[]> {
 }
 
 export async function pickDirectory(): Promise<string | null> {
+  const copy = getCopy();
   const selected = await open({
     directory: true,
     multiple: false,
-    title: "选择目录",
+    title: copy.selectFolderTitle,
   });
   return typeof selected === "string" ? selected : null;
 }
 
 export async function pickDirectories(): Promise<string[]> {
+  const copy = getCopy();
   const selected = await open({
     directory: true,
     multiple: true,
-    title: "选择目录",
+    title: copy.selectFolderTitle,
   });
   return Array.isArray(selected) ? selected.filter((path): path is string => typeof path === "string") : [];
 }
 
 export async function pickFiles(): Promise<string[]> {
+  const copy = getCopy();
   const selected = await open({
     directory: false,
     multiple: true,
-    title: "选择文件",
+    title: copy.selectFilesTitle,
   });
   return Array.isArray(selected)
     ? selected.filter((path): path is string => typeof path === "string")

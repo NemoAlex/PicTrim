@@ -1,5 +1,7 @@
 <script lang="ts">
-  let { logs }: { logs: string[] } = $props();
+  import type { Copy } from "../lib/i18n.svelte";
+
+  let { logs, copy }: { logs: string[]; copy: Copy } = $props();
 
   let container = $state<HTMLDivElement | null>(null);
 
@@ -14,11 +16,11 @@
 
 <section class="panel panel-card log-panel">
   <div class="section-head">
-    <h2>输出日志</h2>
+    <h2>{copy.logsTitle}</h2>
   </div>
   <div class="logs" bind:this={container}>
     {#if logs.length === 0}
-      <div class="empty">暂无日志。</div>
+      <div class="empty">{copy.emptyLogs}</div>
     {:else}
       {#each logs as line}
         <div class="log-line">{line}</div>

@@ -1,15 +1,17 @@
 <script lang="ts">
-  import { formatLabel } from "../lib/format";
+  import { outputFormatLabel, type Copy } from "../lib/i18n.svelte";
   import type { BatchSettings } from "../lib/types";
 
   let {
     settings,
+    copy,
   }: {
     settings: BatchSettings;
+    copy: Copy;
   } = $props();
 
   function basename(path: string): string {
-    if (!path) return "—";
+    if (!path) return "-";
     const parts = path.split(/[/\\]/).filter(Boolean);
     return parts[parts.length - 1] ?? path;
   }
@@ -18,15 +20,15 @@
   const sourceLabel = $derived(
     settings.inputSources.length === 1
       ? basename(settings.inputSources[0])
-      : `${settings.inputSources.length} 个来源`,
+      : copy.summarySources(settings.inputSources.length),
   );
   const sizeLabel = $derived(
     settings.resizeMode === "fitLongestSide"
-      ? `最长边 ${settings.maxSide}px`
+      ? copy.summaryLongestSide(settings.maxSide)
       : settings.resizeMode === "fitWidth"
-        ? `宽 ${settings.width}px`
+        ? copy.summaryWidth(settings.width)
         : settings.resizeMode === "fitHeight"
-          ? `高 ${settings.height}px`
+          ? copy.summaryHeight(settings.height)
           : `${settings.width}x${settings.height}px`,
   );
 </script>
@@ -52,12 +54,12 @@
 
   <div class="summary-params">
     <span class="param-chip">{sizeLabel}</span>
-    <span class="param-chip">{settings.rotation === "auto" ? "EXIF自动校正" : "手动旋转"}</span>
-    <span class="param-chip">{settings.allowUpscale ? "允许放大" : "不放大"}</span>
-    <span class="param-chip">质量 {settings.quality}</span>
-    <span class="param-chip">{formatLabel(settings.outputFormat)}</span>
-    <span class="param-chip">并发 {settings.concurrency}</span>
-    <span class="param-chip">{settings.copyNonImages ? "复制非图片" : "忽略非图片"}</span>
-    <span class="param-chip">{settings.skipExisting ? "跳过已存在" : "覆盖已存在"}</span>
+    <span class="param-chip">{settings.rotation === "auto" ? copy.autoRotation : copy.manualRotation}</span>
+    <span class="param-chip">{settings.allowUpscale ? copy.allowUpscale : copy.disallowUpscale}</span>
+    <span class="param-chip">{copy.qualitySummary(settings.quality)}</span>
+    <span class="param-chip">{outputFormatLabel(settings.outputFormat, copy)}</span>
+    <span class="param-chip">{copy.concurrencySummary(settings.concurrency)}</span>
+    <span class="param-chip">{settings.copyNonImages ? copy.copyNonImagesSummary : copy.ignoreNonImagesSummary}</span>
+    <span class="param-chip">{settings.skipExisting ? copy.skipExistingSummary : copy.overwriteExistingSummary}</span>
   </div>
 </section>

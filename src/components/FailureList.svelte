@@ -1,20 +1,21 @@
 <script lang="ts">
+  import { localizeBackendMessage, type Copy } from "../lib/i18n.svelte";
   import type { FailureEntry } from "../lib/types";
 
-  let { failures }: { failures: FailureEntry[] } = $props();
+  let { failures, copy }: { failures: FailureEntry[]; copy: Copy } = $props();
 </script>
 
 {#if failures.length > 0}
   <section class="panel panel-card error-panel">
     <div class="section-head error-head">
-      <h2>错误列表</h2>
-      <span>{failures.length} 个文件处理失败</span>
+      <h2>{copy.failuresTitle}</h2>
+      <span>{copy.failuresSubtitle(failures.length)}</span>
     </div>
     <div class="failures">
       {#each failures.slice(0, 500) as entry}
         <div class="failure">
           <strong>{entry.rel}</strong>
-          <span>{entry.message}</span>
+          <span>{localizeBackendMessage(entry.message, copy)}</span>
         </div>
       {/each}
     </div>
