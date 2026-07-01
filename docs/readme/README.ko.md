@@ -88,4 +88,8 @@ npm run release:package
 
 현재 GitHub Releases는 서명되지 않은 바이너리를 제공합니다. macOS 또는 Windows에서 처음 실행할 때 보안 경고가 표시될 수 있습니다. 프로젝트 Releases 페이지에서 다운로드하고, 함께 제공되는 `SHA256SUMS.txt`로 파일 무결성을 확인하세요.
 
-자세한 릴리스 절차는 [docs/release.md](../release.md)를 참고하세요.
+자세한 릴리스 절차는 [../release.md](../release.md)를 참고하세요.
+
+## 라이선스
+
+PicTrim은 [MIT License](../../LICENSE)로 배포됩니다.

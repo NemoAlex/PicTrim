@@ -3,6 +3,7 @@ name = "pictrim"
 version = "0.1.2"
 description = "Fast batch image resizing"
 authors = ["PicTrim"]
+license = "MIT"
 edition = "2021"
 
 [lib]

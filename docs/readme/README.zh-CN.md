@@ -88,4 +88,8 @@ npm run release:package
 
 当前 GitHub Releases 提供未签名的二进制文件。macOS 或 Windows 首次打开时可能显示安全提示。请从项目 Releases 页面下载，并使用随 release 附带的 `SHA256SUMS.txt` 校验文件完整性。
 
-更详细的发布步骤见 [docs/release.md](../release.md)。
+更详细的发布步骤见 [../release.md](../release.md)。
+
+## 许可证
+
+PicTrim 基于 [MIT License](../../LICENSE) 发布。

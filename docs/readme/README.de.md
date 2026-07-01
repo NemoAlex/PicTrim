@@ -88,4 +88,8 @@ Nach Abschluss des Builds enthält `release/PicTrim/` die portable Version. Wind
 
 Aktuelle GitHub Releases enthalten unsignierte Binärdateien. macOS oder Windows können beim ersten Start eine Sicherheitswarnung anzeigen. Laden Sie die Dateien von der Releases-Seite des Projekts herunter und prüfen Sie die Integrität mit der enthaltenen Datei `SHA256SUMS.txt`.
 
-Details zum Veröffentlichungsablauf finden Sie in [docs/release.md](../release.md).
+Details zum Veröffentlichungsablauf finden Sie in [../release.md](../release.md).
+
+## Lizenz
+
+PicTrim wird unter der [MIT License](../../LICENSE) veröffentlicht.
