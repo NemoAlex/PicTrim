@@ -23,6 +23,22 @@ npm run release:package
 ## Release 文案模板
 
 ```markdown
+## Downloads
+
+- Windows: download the installer or portable zip.
+- macOS: download the portable zip.
+
+## Security Notice
+
+These builds are unsigned. macOS or Windows may show a security warning the first time you open the app.
+
+To verify the download, compare the file checksum with the `SHA256SUMS.txt` included in this release.
+
+Windows users may need to choose "More info", then "Run anyway" in SmartScreen.
+macOS users may need to try opening the app once, then allow it in "System Settings > Privacy & Security".
+
+---
+
 ## 下载
 
 - Windows：下载 installer 或 portable zip。
