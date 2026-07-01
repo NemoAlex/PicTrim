@@ -6,7 +6,7 @@
   import LogList from "./components/LogList.svelte";
   import FailureList from "./components/FailureList.svelte";
   import { toNumber } from "./lib/format";
-  import { getCopy, locale, localizeBackendMessage, outputFormatLabel, phaseTitle, setLanguage, syncDocumentLanguage } from "./lib/i18n.svelte";
+  import { getCopy, getCopyForLanguage, locale, localizeBackendMessage, outputFormatLabel, phaseTitle, setLanguage, supportedLanguages, syncDocumentLanguage } from "./lib/i18n.svelte";
   import type { Language } from "./lib/i18n.svelte";
   import { cancelBatch, loadSettings, onFailures, onProgress, saveSettings, startBatch } from "./lib/tauri";
   import type { BatchProgress, BatchSettings, FailureEntry } from "./lib/types";
@@ -354,14 +354,17 @@
         </button>
         {#if languageMenuOpen}
           <div class="language-menu" role="menu">
-            <button class:active={locale.language === "en"} role="menuitemradio" aria-checked={locale.language === "en"} onclick={() => chooseLanguage("en")}>
-              <span>English</span>
-              <span class="language-check">✓</span>
-            </button>
-            <button class:active={locale.language === "zh"} role="menuitemradio" aria-checked={locale.language === "zh"} onclick={() => chooseLanguage("zh")}>
-              <span>中文</span>
-              <span class="language-check">✓</span>
-            </button>
+            {#each supportedLanguages as language}
+              <button
+                class:active={locale.language === language}
+                role="menuitemradio"
+                aria-checked={locale.language === language}
+                onclick={() => chooseLanguage(language)}
+              >
+                <span>{getCopyForLanguage(language).languageName}</span>
+                <span class="language-check">✓</span>
+              </button>
+            {/each}
           </div>
         {/if}
       </div>

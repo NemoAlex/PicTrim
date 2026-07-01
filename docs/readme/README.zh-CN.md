@@ -1,12 +1,12 @@
 <p>
-  <img src="docs/pictrim-logo.png" alt="PicTrim - 超快图片处理工具" width="360">
+  <img src="assets/pictrim-logo.png" alt="PicTrim - 超快图片处理工具" width="360">
 </p>
 
-[English](README.md)
+[English](../../README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Deutsch](README.de.md)
 
 PicTrim 是一个高性能的图片批处理工具。支持对图片进行批量缩放、压缩、旋转和格式转换。
 
-![PicTrim 界面截图](docs/pictrim-screenshot-zh-CN.png)
+![PicTrim 界面截图](assets/pictrim-screenshot-zh-CN.png)
 
 ## 功能
 
@@ -88,4 +88,4 @@ npm run release:package
 
 当前 GitHub Releases 提供未签名的二进制文件。macOS 或 Windows 首次打开时可能显示安全提示。请从项目 Releases 页面下载，并使用随 release 附带的 `SHA256SUMS.txt` 校验文件完整性。
 
-更详细的发布步骤见 [docs/release.md](docs/release.md)。
+更详细的发布步骤见 [docs/release.md](../release.md)。

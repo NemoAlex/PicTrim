@@ -1,12 +1,12 @@
 <p>
-  <img src="docs/pictrim-logo.png" alt="PicTrim - Ultra-fast image processing tool" width="360">
+  <img src="docs/readme/assets/pictrim-logo.png" alt="PicTrim - Ultra-fast image processing tool" width="360">
 </p>
 
-[中文](README.zh-CN.md)
+[English](README.md) | [中文](docs/readme/README.zh-CN.md) | [日本語](docs/readme/README.ja.md) | [한국어](docs/readme/README.ko.md) | [Français](docs/readme/README.fr.md) | [Deutsch](docs/readme/README.de.md)
 
 PicTrim is a high-performance batch image processing tool for resizing, compressing, rotating, and converting images.
 
-![PicTrim screenshot](docs/pictrim-screenshot-en.png)
+![PicTrim screenshot](docs/readme/assets/pictrim-screenshot-en.png)
 
 ## Features
 
