@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCopy } from "./i18n.svelte";
-import type { BatchProgress, BatchSettings, FailureEntry, SourceEntry } from "./types";
+import type { BatchProgress, BatchSettings, FailureEntry, PreviewPair, PreviewTree, SourceEntry } from "./types";
 
 export function startBatch(settings: BatchSettings): Promise<void> {
   return invoke("start_batch", { settings });
@@ -23,6 +23,14 @@ export function saveSettings(settings: BatchSettings): Promise<void> {
 
 export function classifySources(paths: string[]): Promise<SourceEntry[]> {
   return invoke("classify_sources", { paths });
+}
+
+export function loadPreviewTree(settings: BatchSettings): Promise<PreviewTree> {
+  return invoke("load_preview_tree", { settings });
+}
+
+export function renderPreview(settings: BatchSettings, srcPath: string): Promise<PreviewPair> {
+  return invoke("render_preview", { settings, srcPath });
 }
 
 export async function pickDirectory(): Promise<string | null> {

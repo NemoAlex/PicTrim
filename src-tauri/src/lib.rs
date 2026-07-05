@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose, Engine as _};
 use rayon::ThreadPoolBuilder;
 use rs_vips::{
     bindings,
@@ -21,6 +22,7 @@ const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "gif", "jfif",
 ];
 const PROGRESS_INTERVAL_MS: u64 = 100;
+const PREVIEW_MAX_SIDE: i32 = 1600;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static VIPS_INIT: OnceLock<bool> = OnceLock::new();
 
@@ -160,6 +162,39 @@ struct WorkItem {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct PreviewTree {
+    items: Vec<PreviewItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewItem {
+    path: String,
+    rel: String,
+    name: String,
+    segments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewPair {
+    rel: String,
+    before: PreviewImage,
+    after: PreviewImage,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewImage {
+    data: String,
+    mime: String,
+    width: i32,
+    height: i32,
+    bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct BatchProgress {
     phase: String,
     discovered: usize,
@@ -288,6 +323,74 @@ fn classify_sources(paths: Vec<String>) -> Vec<SourceEntry> {
 }
 
 #[tauri::command]
+async fn load_preview_tree(settings: BatchSettings) -> Result<PreviewTree, String> {
+    tauri::async_runtime::spawn_blocking(move || load_preview_tree_blocking(settings))
+        .await
+        .map_err(|err| format!("加载预览列表失败: {err}"))?
+}
+
+fn load_preview_tree_blocking(settings: BatchSettings) -> Result<PreviewTree, String> {
+    validate_preview_settings(&settings)?;
+    let items = collect_preview_work_items(&settings)?
+        .into_iter()
+        .map(|item| {
+            let segments = item
+                .rel
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            let name = item
+                .rel
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| item.rel.to_string_lossy().to_string());
+            PreviewItem {
+                path: item.src.to_string_lossy().to_string(),
+                rel: item.rel.to_string_lossy().to_string(),
+                name,
+                segments,
+            }
+        })
+        .collect();
+    Ok(PreviewTree { items })
+}
+
+#[tauri::command]
+async fn render_preview(settings: BatchSettings, src_path: String) -> Result<PreviewPair, String> {
+    tauri::async_runtime::spawn_blocking(move || render_preview_blocking(settings, src_path))
+        .await
+        .map_err(|err| format!("生成预览任务失败: {err}"))?
+}
+
+fn render_preview_blocking(
+    settings: BatchSettings,
+    src_path: String,
+) -> Result<PreviewPair, String> {
+    validate_preview_settings(&settings)?;
+    ensure_vips()?;
+
+    let src = PathBuf::from(&src_path);
+    if !src.is_file() {
+        return Err("预览文件不存在".to_string());
+    }
+    if !is_supported_image(&src) {
+        return Err("不支持的图片格式".to_string());
+    }
+    let item = collect_preview_work_items(&settings)?
+        .into_iter()
+        .find(|item| same_file_path(&item.src, &src))
+        .ok_or_else(|| "预览文件不在输入来源中".to_string())?;
+
+    let before = preview_original_image(&src)?;
+    let after = preview_processed_image(&src, &settings)?;
+    Ok(PreviewPair {
+        rel: item.rel.to_string_lossy().to_string(),
+        before,
+        after,
+    })
+}
+
+#[tauri::command]
 fn load_settings(app: AppHandle) -> Result<Option<BatchSettings>, String> {
     let path = settings_path(&app)?;
     let data = match fs::read_to_string(&path) {
@@ -399,6 +502,24 @@ fn validate_settings(settings: &BatchSettings) -> Result<(), String> {
         if output_inside_input(&source.path, Path::new(&settings.output_dir)) {
             return Err("输出目录不能位于输入目录内部，请另选位置".to_string());
         }
+    }
+    Ok(())
+}
+
+fn validate_preview_settings(settings: &BatchSettings) -> Result<(), String> {
+    if settings.output_dir.trim().is_empty() {
+        return Err("请选择输出目录".to_string());
+    }
+    let sources = input_sources(settings)?;
+    if sources.is_empty() {
+        return Err("请选择输入来源".to_string());
+    }
+    validate_dimensions(settings)?;
+    if settings.max_side < 1 || settings.max_side > 50000 {
+        return Err("最长边必须在 1 到 50000 之间".to_string());
+    }
+    if settings.quality < 1 || settings.quality > 100 {
+        return Err("质量必须在 1 到 100 之间".to_string());
     }
     Ok(())
 }
@@ -751,6 +872,111 @@ fn file_rel(path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("file"))
 }
 
+fn collect_preview_work_items(settings: &BatchSettings) -> Result<Vec<WorkItem>, String> {
+    let output_dir = PathBuf::from(&settings.output_dir);
+    let sources = input_sources(settings)?;
+    let single_directory_source =
+        sources.len() == 1 && sources[0].kind == SourcePathKind::Directory;
+    let mut items = Vec::new();
+
+    for source in sources {
+        match source.kind {
+            SourcePathKind::File => {
+                push_preview_file_source(
+                    &mut items,
+                    &source.path,
+                    file_rel(&source.path),
+                    &output_dir,
+                    settings,
+                );
+            }
+            SourcePathKind::Directory => {
+                let prefix = if single_directory_source {
+                    None
+                } else {
+                    source.path.file_name().map(PathBuf::from)
+                };
+                collect_preview_directory_source(
+                    &mut items,
+                    &source.path,
+                    prefix.as_deref(),
+                    &output_dir,
+                    settings,
+                );
+            }
+        }
+    }
+
+    items.sort_by(|left, right| left.rel.cmp(&right.rel));
+    Ok(items)
+}
+
+fn collect_preview_directory_source(
+    items: &mut Vec<WorkItem>,
+    root: &Path,
+    prefix: Option<&Path>,
+    output_dir: &Path,
+    settings: &BatchSettings,
+) {
+    for entry in WalkDir::new(root).into_iter().filter_entry(|entry| {
+        if entry.depth() == 0 {
+            return true;
+        }
+        !is_hidden_name(entry.file_name())
+    }) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if is_temp_output_name(entry.file_name()) {
+            continue;
+        }
+        let src = entry.path().to_path_buf();
+        let inner_rel = match src.strip_prefix(root) {
+            Ok(rel) => rel,
+            Err(_) => continue,
+        };
+        if inner_rel
+            .components()
+            .any(|part| is_hidden_name(part.as_os_str()))
+        {
+            continue;
+        }
+        let rel = match prefix {
+            Some(prefix) => prefix.join(inner_rel),
+            None => inner_rel.to_path_buf(),
+        };
+        push_preview_file_source(items, &src, rel, output_dir, settings);
+    }
+}
+
+fn push_preview_file_source(
+    items: &mut Vec<WorkItem>,
+    src: &Path,
+    rel: PathBuf,
+    output_dir: &Path,
+    settings: &BatchSettings,
+) {
+    if is_hidden_name(src.file_name().unwrap_or_else(|| OsStr::new(""))) {
+        return;
+    }
+    if is_temp_output_name(src.file_name().unwrap_or_else(|| OsStr::new(""))) {
+        return;
+    }
+    if !is_supported_image(src) {
+        return;
+    }
+    items.push(WorkItem {
+        dst: output_path(output_dir, &rel, settings.output_format),
+        src: src.to_path_buf(),
+        rel,
+        is_image: true,
+    });
+}
+
 #[derive(Debug)]
 enum ItemResult {
     Image { src_bytes: u64, dst_bytes: u64 },
@@ -801,34 +1027,8 @@ fn resize_image(src: &Path, dst: &Path, settings: &BatchSettings) -> Result<(u64
     let src_bytes = file_size(src);
     let temp = temp_output_path(dst);
     {
-        let load_source = thumbnail_load_source(src, settings.output_format);
-        let mut image = match settings.resize_mode {
-            ResizeMode::FitLongestSide | ResizeMode::FitBox => {
-                thumbnail_image(&load_source, settings)?
-            }
-            ResizeMode::FitWidth | ResizeMode::FitHeight | ResizeMode::FixedCrop => {
-                manual_resize_image(src, settings)?
-            }
-        };
-
+        let image = processed_image(src, settings)?;
         let format = effective_output_format(src, settings.output_format);
-        if format == OutputFormat::Jpg && image.hasalpha() {
-            let mut flattened = VipsImage::from(null_mut() as *mut bindings::VipsImage);
-            let bg = [255.0_f64, 255.0, 255.0];
-            let result = call(
-                "flatten",
-                VOption::new()
-                    .set("in", &image)
-                    .set("background", &bg[..])
-                    .set("out", &mut flattened),
-            )
-            .map_err(|e| format!("透明背景处理失败: {e} {}", vips_error_detail()))?;
-            if result < 0 {
-                return Err(format!("透明背景处理失败: {}", vips_error_detail()));
-            }
-            image = flattened;
-        }
-
         let save_path = save_path_with_options(&temp, format, settings.quality);
         image.write_to_file(&save_path).map_err(|err| {
             let _ = fs::remove_file(&temp);
@@ -841,6 +1041,100 @@ fn resize_image(src: &Path, dst: &Path, settings: &BatchSettings) -> Result<(u64
         format!("替换失败: {err}")
     })?;
     Ok((src_bytes, file_size(dst)))
+}
+
+fn processed_image(src: &Path, settings: &BatchSettings) -> Result<VipsImage, String> {
+    let load_source = thumbnail_load_source(src, settings.output_format);
+    let image = match settings.resize_mode {
+        ResizeMode::FitLongestSide | ResizeMode::FitBox => thumbnail_image(&load_source, settings)?,
+        ResizeMode::FitWidth | ResizeMode::FitHeight | ResizeMode::FixedCrop => {
+            manual_resize_image(src, settings)?
+        }
+    };
+    prepare_for_output(image, effective_output_format(src, settings.output_format))
+}
+
+fn prepare_for_output(mut image: VipsImage, format: OutputFormat) -> Result<VipsImage, String> {
+    if format == OutputFormat::Jpg && image.hasalpha() {
+        let mut flattened = VipsImage::from(null_mut() as *mut bindings::VipsImage);
+        let bg = [255.0_f64, 255.0, 255.0];
+        let result = call(
+            "flatten",
+            VOption::new()
+                .set("in", &image)
+                .set("background", &bg[..])
+                .set("out", &mut flattened),
+        )
+        .map_err(|e| format!("透明背景处理失败: {e} {}", vips_error_detail()))?;
+        if result < 0 {
+            return Err(format!("透明背景处理失败: {}", vips_error_detail()));
+        }
+        image = flattened;
+    }
+    Ok(image)
+}
+
+fn preview_original_image(src: &Path) -> Result<PreviewImage, String> {
+    let image = VipsImage::new_from_file(src)
+        .map_err(|e| format!("读取失败: {e} {}", vips_error_detail()))?;
+    let width = image.get_width();
+    let height = image.get_height();
+    let data = encode_preview_png(image)?;
+    Ok(PreviewImage {
+        data: general_purpose::STANDARD.encode(data),
+        mime: "image/png".to_string(),
+        width,
+        height,
+        bytes: file_size(src),
+    })
+}
+
+fn preview_processed_image(src: &Path, settings: &BatchSettings) -> Result<PreviewImage, String> {
+    let image = processed_image(src, settings)?;
+    let width = image.get_width();
+    let height = image.get_height();
+    let format = effective_output_format(src, settings.output_format);
+    let data = encode_preview_output(image, format, settings.quality)?;
+    let bytes = data.len() as u64;
+    Ok(PreviewImage {
+        width,
+        height,
+        bytes,
+        mime: mime_for_output_format(format).to_string(),
+        data: general_purpose::STANDARD.encode(data),
+    })
+}
+
+fn encode_preview_png(image: VipsImage) -> Result<Vec<u8>, String> {
+    let image = downscale_for_preview(image)?;
+    image
+        .write_to_buffer(".png[compression=6,strip]")
+        .map_err(|err| format!("生成预览失败: {err} {}", vips_error_detail()))
+}
+
+fn encode_preview_output(
+    image: VipsImage,
+    format: OutputFormat,
+    quality: i32,
+) -> Result<Vec<u8>, String> {
+    let image = downscale_for_preview(image)?;
+    let suffix = buffer_suffix_with_options(format, quality);
+    image
+        .write_to_buffer(&suffix)
+        .map_err(|err| format!("生成预览失败: {err} {}", vips_error_detail()))
+}
+
+fn downscale_for_preview(image: VipsImage) -> Result<VipsImage, String> {
+    let width = image.get_width().max(1);
+    let height = image.get_height().max(1);
+    let longest = width.max(height);
+    if longest <= PREVIEW_MAX_SIDE {
+        return Ok(image);
+    }
+    let scale = PREVIEW_MAX_SIDE as f64 / longest as f64;
+    image
+        .resize(scale)
+        .map_err(|e| format!("生成预览缩略图失败: {e} {}", vips_error_detail()))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -890,8 +1184,8 @@ fn thumbnail_image(load_source: &str, settings: &BatchSettings) -> Result<VipsIm
 }
 
 fn manual_resize_image(src: &Path, settings: &BatchSettings) -> Result<VipsImage, String> {
-    let mut image =
-        VipsImage::new_from_file(src).map_err(|e| format!("读取失败: {e} {}", vips_error_detail()))?;
+    let mut image = VipsImage::new_from_file(src)
+        .map_err(|e| format!("读取失败: {e} {}", vips_error_detail()))?;
     if settings.rotation == Rotation::Auto {
         image = image
             .autorot()
@@ -1155,6 +1449,23 @@ fn save_path_with_options(dst: &Path, format: OutputFormat, quality: i32) -> Str
     }
 }
 
+fn buffer_suffix_with_options(format: OutputFormat, quality: i32) -> String {
+    match format {
+        OutputFormat::Jpg => format!(".jpg[Q={quality},strip,interlace]"),
+        OutputFormat::Webp => format!(".webp[Q={quality},strip]"),
+        OutputFormat::Png => ".png[compression=6,strip]".to_string(),
+        OutputFormat::Keep => ".jpg".to_string(),
+    }
+}
+
+fn mime_for_output_format(format: OutputFormat) -> &'static str {
+    match format {
+        OutputFormat::Jpg | OutputFormat::Keep => "image/jpeg",
+        OutputFormat::Png => "image/png",
+        OutputFormat::Webp => "image/webp",
+    }
+}
+
 fn is_supported_image(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
@@ -1218,6 +1529,8 @@ pub fn run() {
             start_batch,
             cancel_batch,
             classify_sources,
+            load_preview_tree,
+            render_preview,
             load_settings,
             save_settings
         ])
@@ -1228,6 +1541,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static VIPS_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     #[test]
     fn recognizes_supported_images_case_insensitively() {
@@ -1365,6 +1680,65 @@ mod tests {
     }
 
     #[test]
+    fn preview_tree_uses_batch_relative_paths() {
+        let base = temp_test_dir("preview-paths");
+        let input = base.join("photos");
+        let output = base.join("out");
+        fs::create_dir_all(input.join("nested")).unwrap();
+        fs::write(input.join("nested").join("a.jpg"), b"not-real").unwrap();
+
+        let settings = test_settings(vec![input.to_string_lossy().to_string()], &output);
+        let items = collect_preview_work_items(&settings).unwrap();
+        assert_eq!(items[0].rel, PathBuf::from("nested/a.jpg"));
+
+        let loose = base.join("loose.png");
+        fs::write(&loose, b"not-real").unwrap();
+        let settings = test_settings(
+            vec![
+                input.to_string_lossy().to_string(),
+                loose.to_string_lossy().to_string(),
+            ],
+            &output,
+        );
+        let rels: Vec<PathBuf> = collect_preview_work_items(&settings)
+            .unwrap()
+            .into_iter()
+            .map(|item| item.rel)
+            .collect();
+        assert_eq!(
+            rels,
+            vec![
+                PathBuf::from("loose.png"),
+                PathBuf::from("photos/nested/a.jpg")
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn preview_tree_filters_hidden_temp_and_non_images() {
+        let base = temp_test_dir("preview-filters");
+        let input = base.join("photos");
+        let output = base.join("out");
+        fs::create_dir_all(input.join(".hidden")).unwrap();
+        fs::write(input.join("a.jpg"), b"not-real").unwrap();
+        fs::write(input.join("notes.txt"), b"not-real").unwrap();
+        fs::write(input.join("a.pictrim-tmp-123-0.jpg"), b"not-real").unwrap();
+        fs::write(input.join(".hidden").join("b.jpg"), b"not-real").unwrap();
+
+        let settings = test_settings(vec![input.to_string_lossy().to_string()], &output);
+        let rels: Vec<PathBuf> = collect_preview_work_items(&settings)
+            .unwrap()
+            .into_iter()
+            .map(|item| item.rel)
+            .collect();
+        assert_eq!(rels, vec![PathBuf::from("a.jpg")]);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn migrates_legacy_input_dir_setting() {
         let value = serde_json::json!({
             "inputDir": "/tmp/photos",
@@ -1386,6 +1760,10 @@ mod tests {
 
     #[test]
     fn resize_can_replace_source_file_through_temp_output() {
+        let _guard = VIPS_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
         Vips::init("PicTrimTest").expect("initialize libvips");
         Vips::concurrency_set(1);
 
@@ -1420,6 +1798,57 @@ mod tests {
         let result = resize_image(&image_path, &image_path, &settings);
         let _ = fs::remove_dir_all(&dir);
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn render_preview_does_not_create_output_file() {
+        let _guard = VIPS_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let _ = ensure_vips();
+
+        let dir = temp_test_dir("render-preview");
+        let input = dir.join("input");
+        let output = dir.join("out");
+        fs::create_dir_all(&input).unwrap();
+        let image_path = input.join("source.png");
+        fs::write(&image_path, ONE_BY_ONE_PNG).unwrap();
+
+        let settings = test_settings(vec![input.to_string_lossy().to_string()], &output);
+        let result =
+            render_preview_blocking(settings, image_path.to_string_lossy().to_string()).unwrap();
+
+        assert_eq!(result.before.width, 1);
+        assert_eq!(result.before.height, 1);
+        assert_eq!(result.after.width, 1);
+        assert_eq!(result.after.height, 1);
+        assert!(!output.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_output_format_matches_effective_output() {
+        assert_eq!(
+            buffer_suffix_with_options(OutputFormat::Jpg, 82),
+            ".jpg[Q=82,strip,interlace]"
+        );
+        assert_eq!(
+            buffer_suffix_with_options(OutputFormat::Png, 82),
+            ".png[compression=6,strip]"
+        );
+        assert_eq!(
+            buffer_suffix_with_options(OutputFormat::Webp, 82),
+            ".webp[Q=82,strip]"
+        );
+        assert_eq!(
+            mime_for_output_format(effective_output_format(
+                Path::new("source.png"),
+                OutputFormat::Keep
+            )),
+            "image/png"
+        );
     }
 
     const ONE_BY_ONE_PNG: &[u8] = &[

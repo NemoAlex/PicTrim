@@ -304,11 +304,20 @@
                           data-crop-x={processingMode === "fixedCrop" ? settings.cropHorizontal : undefined}
                           data-crop-y={processingMode === "fixedCrop" ? settings.cropVertical : undefined}
                         >
-                          <div class="motion-photo">
+                          <div class="motion-photo source-photo">
                             <span class="photo-sun"></span>
                             <span class="photo-ridge photo-ridge-back"></span>
                             <span class="photo-ridge photo-ridge-front"></span>
                             <span class="photo-shine"></span>
+                          </div>
+                          <span class="flow-arrow"></span>
+                          <div class="result-frame">
+                            <div class="motion-photo result-photo">
+                              <span class="photo-sun"></span>
+                              <span class="photo-ridge photo-ridge-back"></span>
+                              <span class="photo-ridge photo-ridge-front"></span>
+                              <span class="photo-shine"></span>
+                            </div>
                           </div>
                           {#if processingMode === "fixedCrop"}
                             <div class="crop-window"></div>

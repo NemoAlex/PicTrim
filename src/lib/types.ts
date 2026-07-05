@@ -49,3 +49,28 @@ export interface FailureEntry {
   rel: string;
   message: string;
 }
+
+export interface PreviewTree {
+  items: PreviewItem[];
+}
+
+export interface PreviewItem {
+  path: string;
+  rel: string;
+  name: string;
+  segments: string[];
+}
+
+export interface PreviewPair {
+  rel: string;
+  before: PreviewImage;
+  after: PreviewImage;
+}
+
+export interface PreviewImage {
+  data: string;
+  mime: string;
+  width: number;
+  height: number;
+  bytes: number;
+}

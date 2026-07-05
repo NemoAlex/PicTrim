@@ -5,6 +5,7 @@
   import ProgressStats from "./components/ProgressStats.svelte";
   import LogList from "./components/LogList.svelte";
   import FailureList from "./components/FailureList.svelte";
+  import PreviewView from "./components/PreviewView.svelte";
   import { toNumber } from "./lib/format";
   import { getCopy, getCopyForLanguage, locale, localizeBackendMessage, outputFormatLabel, phaseTitle, setLanguage, supportedLanguages, syncDocumentLanguage } from "./lib/i18n.svelte";
   import type { Language } from "./lib/i18n.svelte";
@@ -58,7 +59,8 @@
               : "idle",
   );
 
-  let view = $derived(running || progress ? "run" : "config");
+  let previewOpen = $state(false);
+  let view = $derived(running || progress ? "run" : previewOpen ? "preview" : "config");
   const startReady = $derived(settings.inputSources.length > 0 && Boolean(settings.outputDir));
   let starting = $state(false);
   let resetLocked = $state(false);
@@ -195,6 +197,7 @@
 
     starting = true;
     running = true;
+    previewOpen = false;
     resetLocked = true;
     if (resetLockTimer) window.clearTimeout(resetLockTimer);
     resetLockTimer = window.setTimeout(() => {
@@ -251,6 +254,7 @@
   }
 
   function handleReset() {
+    previewOpen = false;
     progress = null;
     failures = [];
     logs = [];
@@ -258,6 +262,15 @@
     statusTitle = copy.waitTitle;
     statusMessage = copy.waitMessage;
     currentFile = "";
+  }
+
+  function handlePreview() {
+    if (!startReady || starting || running) return;
+    previewOpen = true;
+  }
+
+  function handleBackToConfig() {
+    previewOpen = false;
   }
 
   function updateScrollIndicator() {
@@ -307,6 +320,10 @@
         </div>
       {/if}
     </div>
+  {:else if view === "preview"}
+    <div class="content content-preview">
+      <PreviewView {settings} {copy} />
+    </div>
   {:else}
     <div class="content content-run">
       <SummaryBar {settings} {copy} />
@@ -319,8 +336,16 @@
   <footer class="bottombar">
     <div class="bottombar-inner">
       {#if view === "config"}
+        <button class="secondary bottombar-action" onclick={handlePreview} disabled={!startReady || starting}>
+          {copy.previewButton}
+        </button>
         <button class="primary bottombar-action bottombar-action-primary" onclick={handleStart} disabled={!startReady || starting}>
           {starting ? copy.startingButton : copy.startButton}
+        </button>
+      {/if}
+      {#if view === "preview"}
+        <button class="secondary bottombar-action" onclick={handleBackToConfig}>
+          {copy.backButton}
         </button>
       {/if}
       {#if view === "run" && !running}

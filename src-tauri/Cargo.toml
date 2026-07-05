@@ -15,6 +15,7 @@ pkg-config = "0.3"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.22"
 rs-vips = "0.7"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
