@@ -6,19 +6,9 @@
 
 PicTrim is a high-performance batch image processing tool for resizing, compressing, rotating, and converting images.
 
-## Screenshots
+## Screenshot
 
-| English | 中文 |
-| --- | --- |
-| ![PicTrim English screenshot](docs/readme/assets/pictrim-screenshot-en.png) | ![PicTrim Chinese screenshot](docs/readme/assets/pictrim-screenshot-zh-CN.png) |
-
-| 日本語 | 한국어 |
-| --- | --- |
-| ![PicTrim Japanese screenshot](docs/readme/assets/pictrim-screenshot-ja.png) | ![PicTrim Korean screenshot](docs/readme/assets/pictrim-screenshot-ko.png) |
-
-| Français | Deutsch |
-| --- | --- |
-| ![PicTrim French screenshot](docs/readme/assets/pictrim-screenshot-fr.png) | ![PicTrim German screenshot](docs/readme/assets/pictrim-screenshot-de.png) |
+![PicTrim screenshot](docs/readme/assets/pictrim-screenshot-en.png)
 
 ## Features
 
