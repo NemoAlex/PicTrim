@@ -23,7 +23,6 @@
   let cropPreviewWide = $state(true);
   let longestSideWide = $state(true);
   let showPreviewBubble = $state(false);
-  let showAdvanced = $state(false);
   let showAllSources = $state(false);
   let previewTimer: number | undefined;
 
@@ -54,6 +53,7 @@
           ? copy.upscaleToHeight
           : copy.upscaleToFit,
   );
+  const showResizePreview = false;
 
   onMount(() => {
     refreshSources();
@@ -117,6 +117,10 @@
     return parts[parts.length - 1] ?? path;
   }
 
+  function isImageSource(source: SourceEntry): boolean {
+    return source.kind === "file" && /\.(avif|gif|jpe?g|png|tiff?|webp)$/i.test(source.path);
+  }
+
   function previewCopy(mode: BatchSettings["resizeMode"]) {
     return resizeModeCopy(mode, copy);
   }
@@ -163,7 +167,7 @@
     const value = (event.currentTarget as HTMLSelectElement).value as BatchSettings["resizeMode"];
     settings.thumbnail = false;
     settings.resizeMode = value;
-    openPreviewBubble();
+    if (showResizePreview) openPreviewBubble();
   }
 </script>
 
@@ -174,7 +178,6 @@
         <span class="task-step">1</span>
         <div>
           <h3>{copy.sourceTaskTitle}</h3>
-          <p>{settings.inputSources.length > 0 ? copy.sourceTaskReady(settings.inputSources.length) : copy.sourceTaskHint}</p>
         </div>
       </div>
 
@@ -206,7 +209,31 @@
             {#if sources.length > 0}
               {#each visibleSources as source}
                 <div class:missing={source.kind === "missing"} class="source-item">
-                  <span class="source-kind">{sourceKindLabel(source.kind, copy)}</span>
+                  <span class="source-kind" aria-label={sourceKindLabel(source.kind, copy)} title={sourceKindLabel(source.kind, copy)}>
+                    {#if source.kind === "directory"}
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M3 6.5h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                        <path d="M3 8.5h18" />
+                      </svg>
+                    {:else if isImageSource(source)}
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 5.5h16v13H4z" />
+                        <path d="m7 15 3-3 3 3 2-2 3 3" />
+                        <circle cx="9" cy="9" r="1.2" />
+                      </svg>
+                    {:else if source.kind === "file"}
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M7 3.5h7l4 4v13H7z" />
+                        <path d="M14 3.5v4h4" />
+                      </svg>
+                    {:else}
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3.5 21 20H3z" />
+                        <path d="M12 9v4" />
+                        <path d="M12 17h.01" />
+                      </svg>
+                    {/if}
+                  </span>
                   <span class="source-name" title={source.path}>{sourceName(source.path)}</span>
                   <button class="icon-button" aria-label={copy.removeSource} title={copy.removeSource} onclick={() => removeSource(source.path)}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
@@ -244,7 +271,6 @@
         <span class="task-step">2</span>
         <div>
           <h3>{copy.outputTaskTitle}</h3>
-          <p>{copy.outputTaskHint}</p>
         </div>
       </div>
 
@@ -262,23 +288,24 @@
       <div class="task-head">
         <span class="task-step">3</span>
         <div>
-          <h3>{copy.ruleTaskTitle}</h3>
-          <p>{previewTitle}，{previewDetail}</p>
+          <h3>{copy.resizeStrategyTitle}</h3>
         </div>
       </div>
 
       <div class="rule-panel">
-        <div class="settings core-rules">
-          <div class="processing-field">
+        <div class="settings crop-rules">
+          <div class="processing-field mode-field">
             <div class="field-label-row">
               <span>{copy.processingMode}</span>
-              <button class="icon-button preview-button" aria-label={copy.previewProcessingMode} title={copy.previewProcessingMode} onclick={togglePreviewBubble}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="10" />
-                  <path d="M12 16v-4" />
-                  <path d="M12 8h.01" />
-                </svg>
-              </button>
+              {#if showResizePreview}
+                <button class="icon-button preview-button" aria-label={copy.previewProcessingMode} title={copy.previewProcessingMode} onclick={togglePreviewBubble}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M12 16v-4" />
+                    <path d="M12 8h.01" />
+                  </svg>
+                </button>
+              {/if}
             </div>
             <div class="processing-control">
               <select value={processingMode} onchange={updateProcessingMode}>
@@ -290,7 +317,7 @@
               </select>
             </div>
 
-            {#if showPreviewBubble}
+            {#if showResizePreview && showPreviewBubble}
               <div class="preview-popover" data-mode={processingMode}>
                 <div class="preview-popover-arrow"></div>
                 <div class="resize-preview" data-mode={processingMode}>
@@ -383,10 +410,57 @@
               </label>
             {/if}
           {/if}
+          {#if !usesCrop}
+            <label>
+              <span>{upscaleLabel}</span>
+              <select bind:value={settings.allowUpscale}>
+                <option value={false}>{copy.noUpscale}</option>
+                <option value={true}>{upscaleOptionLabel}</option>
+              </select>
+            </label>
+          {/if}
+          {#if usesCrop}
+            <label>
+              <span>{copy.horizontalOverflow}</span>
+              <select bind:value={settings.cropHorizontal}>
+                <option value="center">{copy.cropCenter}</option>
+                <option value="left">{copy.cropLeft}</option>
+                <option value="right">{copy.cropRight}</option>
+              </select>
+            </label>
+            <label>
+              <span>{copy.verticalOverflow}</span>
+              <select bind:value={settings.cropVertical}>
+                <option value="center">{copy.cropCenter}</option>
+                <option value="top">{copy.cropTop}</option>
+                <option value="bottom">{copy.cropBottom}</option>
+              </select>
+            </label>
+          {/if}
           <label>
-            <span>{copy.quality}</span>
-            <input type="number" min="1" max="100" bind:value={settings.quality} />
+            <span>{copy.rotation}</span>
+            <select bind:value={settings.rotation}>
+              <option value="auto">{copy.autoRotation}</option>
+              <option value="rotate0">{copy.noRotation}</option>
+              <option value="rotate90">{copy.rotate90}</option>
+              <option value="rotate180">{copy.rotate180}</option>
+              <option value="rotate270">{copy.rotate270}</option>
+            </select>
           </label>
+        </div>
+      </div>
+    </section>
+
+    <section class="task-section">
+      <div class="task-head">
+        <span class="task-step">4</span>
+        <div>
+          <h3>{copy.outputPerformanceTitle}</h3>
+        </div>
+      </div>
+
+      <div class="rule-panel">
+        <div class="settings output-rules">
           <label>
             <span>{copy.outputFormat}</span>
             <select bind:value={settings.outputFormat}>
@@ -396,76 +470,29 @@
               <option value="keep">{copy.outputKeep}</option>
             </select>
           </label>
+          <label>
+            <span>{copy.quality}</span>
+            <input type="number" min="1" max="100" bind:value={settings.quality} />
+          </label>
+          <label class="output-row-break">
+            <span>{copy.concurrency}</span>
+            <input type="number" min="1" max="128" bind:value={settings.concurrency} />
+          </label>
+          <label>
+            <span>{copy.nonImageFiles}</span>
+            <select bind:value={settings.copyNonImages}>
+              <option value={false}>{copy.ignoreNonImages}</option>
+              <option value={true}>{copy.copyNonImages}</option>
+            </select>
+          </label>
+          <label>
+            <span>{copy.existingFiles}</span>
+            <select bind:value={settings.skipExisting}>
+              <option value={true}>{copy.skipExisting}</option>
+              <option value={false}>{copy.overwriteExisting}</option>
+            </select>
+          </label>
         </div>
-
-        <button class="advanced-toggle" class:open={showAdvanced} onclick={() => (showAdvanced = !showAdvanced)} aria-expanded={showAdvanced}>
-          <span>{copy.advancedSettings}</span>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </button>
-
-        {#if showAdvanced}
-          <div class="advanced-panel">
-            <div class="settings advanced-rules">
-              {#if !usesCrop}
-                <label>
-                  <span>{upscaleLabel}</span>
-                  <select bind:value={settings.allowUpscale}>
-                    <option value={false}>{copy.noUpscale}</option>
-                    <option value={true}>{upscaleOptionLabel}</option>
-                  </select>
-                </label>
-              {/if}
-              {#if usesCrop}
-                <label>
-                  <span>{copy.horizontalOverflow}</span>
-                  <select bind:value={settings.cropHorizontal}>
-                    <option value="center">{copy.cropCenter}</option>
-                    <option value="left">{copy.cropLeft}</option>
-                    <option value="right">{copy.cropRight}</option>
-                  </select>
-                </label>
-                <label>
-                  <span>{copy.verticalOverflow}</span>
-                  <select bind:value={settings.cropVertical}>
-                    <option value="center">{copy.cropCenter}</option>
-                    <option value="top">{copy.cropTop}</option>
-                    <option value="bottom">{copy.cropBottom}</option>
-                  </select>
-                </label>
-              {/if}
-              <label>
-                <span>{copy.rotation}</span>
-                <select bind:value={settings.rotation}>
-                  <option value="auto">{copy.autoRotation}</option>
-                  <option value="rotate0">{copy.noRotation}</option>
-                  <option value="rotate90">{copy.rotate90}</option>
-                  <option value="rotate180">{copy.rotate180}</option>
-                  <option value="rotate270">{copy.rotate270}</option>
-                </select>
-              </label>
-              <label>
-                <span>{copy.concurrency}</span>
-                <input type="number" min="1" max="128" bind:value={settings.concurrency} />
-              </label>
-              <label>
-                <span>{copy.nonImageFiles}</span>
-                <select bind:value={settings.copyNonImages}>
-                  <option value={false}>{copy.ignoreNonImages}</option>
-                  <option value={true}>{copy.copyNonImages}</option>
-                </select>
-              </label>
-              <label>
-                <span>{copy.existingFiles}</span>
-                <select bind:value={settings.skipExisting}>
-                  <option value={true}>{copy.skipExisting}</option>
-                  <option value={false}>{copy.overwriteExisting}</option>
-                </select>
-              </label>
-            </div>
-          </div>
-        {/if}
       </div>
     </section>
   </div>
