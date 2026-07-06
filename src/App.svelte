@@ -336,11 +336,11 @@
   <footer class="bottombar">
     <div class="bottombar-inner">
       {#if view === "config"}
-        <button class="secondary bottombar-action" onclick={handlePreview} disabled={!startReady || starting}>
-          {copy.previewButton}
-        </button>
         <button class="primary bottombar-action bottombar-action-primary" onclick={handleStart} disabled={!startReady || starting}>
           {starting ? copy.startingButton : copy.startButton}
+        </button>
+        <button class="secondary bottombar-action" onclick={handlePreview} disabled={!startReady || starting}>
+          {copy.previewButton}
         </button>
       {/if}
       {#if view === "preview"}
