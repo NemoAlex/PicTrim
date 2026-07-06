@@ -6,7 +6,7 @@
 
 PicTrim は、高性能な画像バッチ処理ツールです。画像の一括リサイズ、圧縮、回転、形式変換に対応しています。
 
-![PicTrim screenshot](assets/pictrim-screenshot-en.png)
+![PicTrim screenshot](assets/pictrim-screenshot-ja.png)
 
 ## 機能
 

@@ -6,7 +6,7 @@
 
 PicTrim ist ein leistungsstarkes Tool zur Stapelverarbeitung von Bildern. Es unterstützt das massenhafte Skalieren, Komprimieren, Drehen und Konvertieren von Bildern.
 
-![PicTrim screenshot](assets/pictrim-screenshot-en.png)
+![PicTrim screenshot](assets/pictrim-screenshot-de.png)
 
 ## Funktionen
 

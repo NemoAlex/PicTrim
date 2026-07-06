@@ -6,7 +6,7 @@
 
 PicTrim은 고성능 이미지 일괄 처리 도구입니다. 이미지 일괄 리사이즈, 압축, 회전, 형식 변환을 지원합니다.
 
-![PicTrim screenshot](assets/pictrim-screenshot-en.png)
+![PicTrim screenshot](assets/pictrim-screenshot-ko.png)
 
 ## 기능
 

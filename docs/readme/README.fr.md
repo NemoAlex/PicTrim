@@ -6,7 +6,7 @@
 
 PicTrim est un outil performant de traitement d'images par lot. Il permet de redimensionner, compresser, faire pivoter et convertir des images en masse.
 
-![PicTrim screenshot](assets/pictrim-screenshot-en.png)
+![PicTrim screenshot](assets/pictrim-screenshot-fr.png)
 
 ## Fonctionnalités
 
