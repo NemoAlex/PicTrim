@@ -177,6 +177,23 @@ struct PreviewItem {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct PreviewDirectoryPage {
+    dir_path: Option<String>,
+    entries: Vec<PreviewDirectoryEntry>,
+    next_offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewDirectoryEntry {
+    kind: String,
+    path: String,
+    rel: String,
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PreviewPair {
     rel: String,
     before: PreviewImage,
@@ -329,6 +346,156 @@ async fn load_preview_tree(settings: BatchSettings) -> Result<PreviewTree, Strin
         .map_err(|err| format!("加载预览列表失败: {err}"))?
 }
 
+#[tauri::command]
+async fn load_preview_directory(
+    settings: BatchSettings,
+    dir_path: Option<String>,
+    offset: usize,
+    limit: usize,
+) -> Result<PreviewDirectoryPage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        load_preview_directory_blocking(settings, dir_path, offset, limit)
+    })
+    .await
+    .map_err(|err| format!("加载预览目录失败: {err}"))?
+}
+
+fn load_preview_directory_blocking(
+    settings: BatchSettings,
+    dir_path: Option<String>,
+    offset: usize,
+    limit: usize,
+) -> Result<PreviewDirectoryPage, String> {
+    validate_preview_settings(&settings)?;
+    let limit = limit.clamp(1, 500);
+
+    match dir_path {
+        Some(dir_path) => load_preview_directory_children(&settings, PathBuf::from(dir_path), offset, limit),
+        None => load_preview_root_directory(&settings, offset, limit),
+    }
+}
+
+fn load_preview_root_directory(
+    settings: &BatchSettings,
+    offset: usize,
+    limit: usize,
+) -> Result<PreviewDirectoryPage, String> {
+    let sources = input_sources(settings)?;
+    let single_directory_source =
+        sources.len() == 1 && sources[0].kind == SourcePathKind::Directory;
+    if single_directory_source {
+        return load_preview_directory_children(settings, sources[0].path.clone(), offset, limit);
+    }
+
+    let mut entries = Vec::new();
+    let mut accepted = 0usize;
+    let mut has_more = false;
+    for source in sources {
+        if accepted < offset {
+            accepted += 1;
+            continue;
+        }
+        if entries.len() >= limit {
+            has_more = true;
+            break;
+        }
+        match source.kind {
+            SourcePathKind::Directory => {
+                let name = source
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| source.path.to_string_lossy().to_string());
+                entries.push(PreviewDirectoryEntry {
+                    kind: "directory".to_string(),
+                    path: source.path.to_string_lossy().to_string(),
+                    rel: name.clone(),
+                    name,
+                });
+            }
+            SourcePathKind::File => {
+                if let Some(item) = preview_work_item_for_path(settings, &source.path)? {
+                    entries.push(preview_entry_from_work_item(item));
+                }
+            }
+        }
+        accepted += 1;
+    }
+
+    Ok(PreviewDirectoryPage {
+        dir_path: None,
+        entries,
+        next_offset: if has_more { Some(offset + limit) } else { None },
+    })
+}
+
+fn load_preview_directory_children(
+    settings: &BatchSettings,
+    dir: PathBuf,
+    offset: usize,
+    limit: usize,
+) -> Result<PreviewDirectoryPage, String> {
+    if !dir.is_dir() {
+        return Err("预览目录不存在".to_string());
+    }
+    if !directory_in_preview_sources(settings, &dir)? {
+        return Err("预览目录不在输入来源中".to_string());
+    }
+
+    let mut entries = Vec::new();
+    let mut accepted = 0usize;
+    let mut has_more = false;
+    for entry in fs::read_dir(&dir).map_err(|err| format!("读取目录失败: {err}"))? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let name_os = entry.file_name();
+        if is_hidden_name(&name_os) || is_temp_output_name(&name_os) {
+            continue;
+        }
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        let next_entry = if file_type.is_dir() {
+            let name = name_os.to_string_lossy().to_string();
+            let rel = preview_rel_for_path(settings, &path)?;
+            Some(PreviewDirectoryEntry {
+                kind: "directory".to_string(),
+                path: path.to_string_lossy().to_string(),
+                rel: rel.to_string_lossy().to_string(),
+                name,
+            })
+        } else if file_type.is_file() && is_supported_image(&path) {
+            preview_work_item_for_path(settings, &path)?.map(preview_entry_from_work_item)
+        } else {
+            None
+        };
+
+        let Some(next_entry) = next_entry else {
+            continue;
+        };
+        if accepted < offset {
+            accepted += 1;
+            continue;
+        }
+        if entries.len() >= limit {
+            has_more = true;
+            break;
+        }
+        entries.push(next_entry);
+        accepted += 1;
+    }
+
+    Ok(PreviewDirectoryPage {
+        dir_path: Some(dir.to_string_lossy().to_string()),
+        entries,
+        next_offset: if has_more { Some(offset + limit) } else { None },
+    })
+}
+
 fn load_preview_tree_blocking(settings: BatchSettings) -> Result<PreviewTree, String> {
     validate_preview_settings(&settings)?;
     let items = collect_preview_work_items(&settings)?
@@ -376,9 +543,7 @@ fn render_preview_blocking(
     if !is_supported_image(&src) {
         return Err("不支持的图片格式".to_string());
     }
-    let item = collect_preview_work_items(&settings)?
-        .into_iter()
-        .find(|item| same_file_path(&item.src, &src))
+    let item = preview_work_item_for_path(&settings, &src)?
         .ok_or_else(|| "预览文件不在输入来源中".to_string())?;
 
     let before = preview_original_image(&src)?;
@@ -977,6 +1142,95 @@ fn push_preview_file_source(
     });
 }
 
+fn preview_work_item_for_path(
+    settings: &BatchSettings,
+    src: &Path,
+) -> Result<Option<WorkItem>, String> {
+    if !src.is_file() || !is_supported_image(src) {
+        return Ok(None);
+    }
+    if is_hidden_name(src.file_name().unwrap_or_else(|| OsStr::new("")))
+        || is_temp_output_name(src.file_name().unwrap_or_else(|| OsStr::new("")))
+    {
+        return Ok(None);
+    }
+    if src.components().any(|part| is_hidden_name(part.as_os_str())) {
+        return Ok(None);
+    }
+
+    let rel = match preview_rel_for_path(settings, src) {
+        Ok(rel) => rel,
+        Err(_) => return Ok(None),
+    };
+    let output_dir = PathBuf::from(&settings.output_dir);
+    Ok(Some(WorkItem {
+        dst: output_path(&output_dir, &rel, settings.output_format),
+        src: src.to_path_buf(),
+        rel,
+        is_image: true,
+    }))
+}
+
+fn preview_rel_for_path(settings: &BatchSettings, path: &Path) -> Result<PathBuf, String> {
+    let sources = input_sources(settings)?;
+    let single_directory_source =
+        sources.len() == 1 && sources[0].kind == SourcePathKind::Directory;
+
+    for source in sources {
+        match source.kind {
+            SourcePathKind::File => {
+                if same_file_path(&source.path, path) {
+                    return Ok(file_rel(&source.path));
+                }
+            }
+            SourcePathKind::Directory => {
+                if path == source.path || path.starts_with(&source.path) {
+                    let inner_rel = path
+                        .strip_prefix(&source.path)
+                        .map_err(|_| "无法计算预览相对路径".to_string())?;
+                    if inner_rel
+                        .components()
+                        .any(|part| is_hidden_name(part.as_os_str()))
+                    {
+                        return Err("隐藏文件不参与预览".to_string());
+                    }
+                    return Ok(if single_directory_source {
+                        inner_rel.to_path_buf()
+                    } else {
+                        source
+                            .path
+                            .file_name()
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from("source"))
+                            .join(inner_rel)
+                    });
+                }
+            }
+        }
+    }
+    Err("预览路径不在输入来源中".to_string())
+}
+
+fn directory_in_preview_sources(settings: &BatchSettings, dir: &Path) -> Result<bool, String> {
+    Ok(input_sources(settings)?
+        .into_iter()
+        .any(|source| source.kind == SourcePathKind::Directory && (dir == source.path || dir.starts_with(&source.path))))
+}
+
+fn preview_entry_from_work_item(item: WorkItem) -> PreviewDirectoryEntry {
+    let name = item
+        .rel
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| item.rel.to_string_lossy().to_string());
+    PreviewDirectoryEntry {
+        kind: "file".to_string(),
+        path: item.src.to_string_lossy().to_string(),
+        rel: item.rel.to_string_lossy().to_string(),
+        name,
+    }
+}
+
 #[derive(Debug)]
 enum ItemResult {
     Image { src_bytes: u64, dst_bytes: u64 },
@@ -1529,6 +1783,7 @@ pub fn run() {
             start_batch,
             cancel_batch,
             classify_sources,
+            load_preview_directory,
             load_preview_tree,
             render_preview,
             load_settings,
@@ -1734,6 +1989,33 @@ mod tests {
             .map(|item| item.rel)
             .collect();
         assert_eq!(rels, vec![PathBuf::from("a.jpg")]);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn preview_directory_pages_one_level_without_recursive_scan() {
+        let base = temp_test_dir("preview-directory-page");
+        let input = base.join("photos");
+        let output = base.join("out");
+        fs::create_dir_all(input.join("nested")).unwrap();
+        fs::write(input.join("a.jpg"), b"not-real").unwrap();
+        fs::write(input.join("nested").join("b.jpg"), b"not-real").unwrap();
+
+        let settings = test_settings(vec![input.to_string_lossy().to_string()], &output);
+        let first = load_preview_directory_blocking(settings.clone(), None, 0, 1).unwrap();
+        assert_eq!(first.entries.len(), 1);
+        assert!(first.next_offset.is_some());
+        assert!(first
+            .entries
+            .iter()
+            .all(|entry| entry.rel == "a.jpg" || entry.rel == "nested"));
+
+        let full = load_preview_directory_blocking(settings, None, 0, 10).unwrap();
+        let rels: Vec<String> = full.entries.into_iter().map(|entry| entry.rel).collect();
+        assert!(rels.contains(&"a.jpg".to_string()));
+        assert!(rels.contains(&"nested".to_string()));
+        assert!(!rels.contains(&"nested/b.jpg".to_string()));
 
         let _ = fs::remove_dir_all(&base);
     }

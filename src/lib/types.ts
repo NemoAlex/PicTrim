@@ -54,6 +54,19 @@ export interface PreviewTree {
   items: PreviewItem[];
 }
 
+export interface PreviewDirectoryPage {
+  dirPath?: string | null;
+  entries: PreviewDirectoryEntry[];
+  nextOffset?: number | null;
+}
+
+export interface PreviewDirectoryEntry {
+  kind: "directory" | "file";
+  path: string;
+  rel: string;
+  name: string;
+}
+
 export interface PreviewItem {
   path: string;
   rel: string;
