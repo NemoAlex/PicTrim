@@ -1,11 +1,12 @@
 <script lang="ts">
   import Panzoom from "@panzoom/panzoom";
   import type { PanzoomObject } from "@panzoom/panzoom";
+  import { Minus, Plus, Search, X } from "@lucide/svelte";
   import { onDestroy } from "svelte";
   import { formatBytes } from "../lib/format";
-  import { loadPreviewTree, renderPreview } from "../lib/tauri";
+  import { loadPreviewDirectory, renderPreview } from "../lib/tauri";
   import type { Copy } from "../lib/i18n.svelte";
-  import type { BatchSettings, PreviewImage, PreviewItem, PreviewPair } from "../lib/types";
+  import type { BatchSettings, PreviewDirectoryEntry, PreviewImage, PreviewPair } from "../lib/types";
 
   let {
     settings,
@@ -15,16 +16,30 @@
     copy: Copy;
   } = $props();
 
-  interface TreeNode {
-    name: string;
-    path: string;
-    children: TreeNode[];
-    item?: PreviewItem;
+  interface DirectoryNode {
+    entry: PreviewDirectoryEntry;
+    depth: number;
+    expanded: boolean;
+    loading: boolean;
+    error: string;
+    children: DirectoryNode[];
+    nextOffset: number | null;
   }
 
-  let items = $state<PreviewItem[]>([]);
-  let tree = $state<TreeNode[]>([]);
+  type VisibleRow = { kind: "entry"; node: DirectoryNode } | { kind: "more"; node: DirectoryNode };
+
+  const PAGE_LIMIT = 300;
+  const TREE_ROW_HEIGHT = 32;
+  const TREE_OVERSCAN = 8;
+
+  let rootNodes = $state<DirectoryNode[]>([]);
+  let rootNextOffset = $state<number | null>(null);
+  let rootLoadingMore = $state(false);
+  let treeViewport = $state<HTMLDivElement | null>(null);
+  let treeScrollTop = $state(0);
+  let treeViewportHeight = $state(0);
   let selectedPath = $state("");
+  let selectedFile = $state<PreviewDirectoryEntry | null>(null);
   let pair = $state<PreviewPair | null>(null);
   let treeLoading = $state(true);
   let previewLoading = $state(false);
@@ -62,7 +77,12 @@
   let previewRequestId = 0;
   let lastTreeSignature = "";
 
-  const selectedItem = $derived(items.find((item) => item.path === selectedPath) ?? null);
+  const visibleRows = $derived(flattenVisibleRows(rootNodes));
+  const treeStartIndex = $derived(Math.max(0, Math.floor(treeScrollTop / TREE_ROW_HEIGHT) - TREE_OVERSCAN));
+  const treeVisibleCount = $derived(Math.ceil(treeViewportHeight / TREE_ROW_HEIGHT) + TREE_OVERSCAN * 2);
+  const treeEndIndex = $derived(Math.min(visibleRows.length, treeStartIndex + treeVisibleCount));
+  const treeWindowRows = $derived(visibleRows.slice(treeStartIndex, treeEndIndex));
+  const selectedItem = $derived(selectedFile);
   const zoomImage = $derived(
     zoomTarget === "before" ? (pair?.before ?? null) : zoomTarget === "after" ? (pair?.after ?? null) : null,
   );
@@ -80,6 +100,7 @@
   $effect(() => {
     if (!zoomTarget || !zoomDialog || zoomDialog.open) return;
     zoomDialog.showModal();
+    requestAnimationFrame(() => (zoomCanvas ?? zoomDialog)?.focus({ preventScroll: true }));
   });
 
   $effect(() => {
@@ -95,7 +116,11 @@
   });
 
   $effect(() => {
-    const signature = `${settings.inputSources.join("\n")}\n${settings.outputDir}`;
+    if (treeViewport) treeViewportHeight = treeViewport.clientHeight;
+  });
+
+  $effect(() => {
+      const signature = `${settings.inputSources.join("\n")}\n${settings.outputDir}`;
     if (signature === lastTreeSignature) return;
     lastTreeSignature = signature;
     resetPreviewSelection();
@@ -112,18 +137,24 @@
   async function refreshTree() {
     const currentRequest = ++treeRequestId;
     treeLoading = true;
+    rootLoadingMore = false;
     treeError = "";
     previewError = "";
     try {
-      const next = await loadPreviewTree(settings);
+      const next = await loadPreviewDirectory(settings, null, 0, PAGE_LIMIT);
       if (currentRequest !== treeRequestId) return;
-      items = next.items;
-      tree = buildTree(next.items);
-      if (next.items.length === 0 || !next.items.some((item) => item.path === selectedPath)) resetPreviewSelection();
+      rootNodes = next.entries.map((entry) => createDirectoryNode(entry, 0));
+      rootNextOffset = next.nextOffset ?? null;
+      treeScrollTop = 0;
+      if (!selectedFile || !next.entries.some((entry) => entry.kind === "file" && entry.path === selectedFile?.path)) {
+        resetPreviewSelection();
+        const firstFile = next.entries.find((entry) => entry.kind === "file");
+        if (firstFile) selectFile(firstFile);
+      }
     } catch (error) {
       if (currentRequest !== treeRequestId) return;
-      items = [];
-      tree = [];
+      rootNodes = [];
+      rootNextOffset = null;
       resetPreviewSelection();
       treeError = String(error);
     } finally {
@@ -131,10 +162,11 @@
     }
   }
 
-  function selectFile(item: PreviewItem) {
-    if (selectedPath === item.path && previewLoading) return;
-    selectedPath = item.path;
-    loadSelectedPreview(item.path);
+  function selectFile(entry: PreviewDirectoryEntry) {
+    if (selectedPath === entry.path && previewLoading) return;
+    selectedFile = entry;
+    selectedPath = entry.path;
+    loadSelectedPreview(entry.path);
   }
 
   async function loadSelectedPreview(path: string) {
@@ -157,32 +189,93 @@
     }
   }
 
-  function buildTree(nextItems: PreviewItem[]): TreeNode[] {
-    const roots: TreeNode[] = [];
-    for (const item of nextItems) {
-      let level = roots;
-      const segments = item.segments.length > 0 ? item.segments : [item.name];
-      segments.forEach((segment, index) => {
-        const nodePath = segments.slice(0, index + 1).join("/");
-        let node = level.find((candidate) => candidate.name === segment);
-        if (!node) {
-          node = { name: segment, path: nodePath, children: [] };
-          level.push(node);
-        }
-        if (index === segments.length - 1) node.item = item;
-        level = node.children;
-      });
-    }
-    sortNodes(roots);
-    return roots;
+  function createDirectoryNode(entry: PreviewDirectoryEntry, depth: number): DirectoryNode {
+    return {
+      children: [],
+      depth,
+      entry,
+      error: "",
+      expanded: false,
+      loading: false,
+      nextOffset: null,
+    };
   }
 
-  function sortNodes(nodes: TreeNode[]) {
-    nodes.sort((left, right) => {
-      if (Boolean(left.item) !== Boolean(right.item)) return left.item ? 1 : -1;
-      return left.name.localeCompare(right.name);
-    });
-    for (const node of nodes) sortNodes(node.children);
+  function flattenVisibleRows(nodes: DirectoryNode[]): VisibleRow[] {
+    const rows: VisibleRow[] = [];
+    for (const node of nodes) {
+      rows.push({ kind: "entry", node });
+      if (node.entry.kind === "directory" && node.expanded) {
+        rows.push(...flattenVisibleRows(node.children));
+        if (node.nextOffset !== null || node.loading) rows.push({ kind: "more", node });
+      }
+    }
+    if (rootNextOffset !== null) {
+      rows.push({
+        kind: "more",
+        node: {
+          children: rootNodes,
+          depth: 0,
+          entry: { kind: "directory", name: copy.previewTitle, path: "", rel: "" },
+          error: "",
+          expanded: true,
+          loading: rootLoadingMore,
+          nextOffset: rootNextOffset,
+        },
+      });
+    }
+    return rows;
+  }
+
+  async function toggleDirectory(node: DirectoryNode) {
+    if (node.entry.kind !== "directory") return;
+    node.expanded = !node.expanded;
+    rootNodes = [...rootNodes];
+    if (node.expanded && node.children.length === 0 && node.nextOffset === null && !node.loading) {
+      await loadDirectoryChildren(node, 0);
+    }
+  }
+
+  async function loadDirectoryChildren(node: DirectoryNode, offset: number) {
+    node.loading = true;
+    node.error = "";
+    rootNodes = [...rootNodes];
+    try {
+      const page = await loadPreviewDirectory(settings, node.entry.path || null, offset, PAGE_LIMIT);
+      const nextChildren = page.entries.map((entry) => createDirectoryNode(entry, node.depth + 1));
+      node.children = offset === 0 ? nextChildren : [...node.children, ...nextChildren];
+      node.nextOffset = page.nextOffset ?? null;
+    } catch (error) {
+      node.error = errorMessage(error);
+    } finally {
+      node.loading = false;
+      rootNodes = [...rootNodes];
+    }
+  }
+
+  async function loadRootMore() {
+    if (rootNextOffset === null || rootLoadingMore) return;
+    rootLoadingMore = true;
+    try {
+      const page = await loadPreviewDirectory(settings, null, rootNextOffset, PAGE_LIMIT);
+      rootNodes = [...rootNodes, ...page.entries.map((entry) => createDirectoryNode(entry, 0))];
+      rootNextOffset = page.nextOffset ?? null;
+    } catch (error) {
+      treeError = errorMessage(error);
+    } finally {
+      rootLoadingMore = false;
+    }
+  }
+
+  function handleTreeScroll(event: Event) {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLElement)) return;
+    treeScrollTop = target.scrollTop;
+    treeViewportHeight = target.clientHeight;
+  }
+
+  function measureTreeViewport(node: HTMLDivElement) {
+    treeViewportHeight = node.clientHeight;
   }
 
   function imageUrl(image: PreviewImage): string {
@@ -219,6 +312,12 @@
     zoomTarget = null;
     destroyPanzoom();
     resetZoomCanvas();
+  }
+
+  function releasePointerFocus(event: PointerEvent) {
+    if (event.pointerType === "mouse" || event.pointerType === "touch") {
+      (event.currentTarget as HTMLButtonElement | null)?.blur();
+    }
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -475,6 +574,10 @@
     }
   }
 
+  function isImageEntry(entry: PreviewDirectoryEntry): boolean {
+    return entry.kind === "file" && /\.(avif|gif|jpe?g|png|tiff?|webp)$/i.test(entry.name);
+  }
+
   function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
@@ -482,43 +585,78 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-{#snippet treeNodes(nodes: TreeNode[], depth = 0)}
-  {#each nodes as node (node.path)}
-    {#if node.item}
-      <button
-        class:active={selectedPath === node.item.path}
-        class="preview-tree-file"
-        style={`padding-left: ${10 + depth * 16}px;`}
-        title={node.item.rel}
-        onclick={() => node.item && selectFile(node.item)}
-      >
-        <span>{node.name}</span>
-      </button>
-    {:else}
-      <div class="preview-tree-folder" style={`padding-left: ${10 + depth * 16}px;`}>
-        <span>{node.name}</span>
-      </div>
-      {@render treeNodes(node.children, depth + 1)}
-    {/if}
-  {/each}
-{/snippet}
-
 <section class="preview-layout">
   <aside class="preview-sidebar">
     <div class="preview-sidebar-head">
       <h2>{copy.previewTitle}</h2>
-      <span>{copy.previewImageCount(items.length)}</span>
     </div>
 
-    <div class="preview-tree" aria-label={copy.previewTreeLabel}>
+    <div bind:this={treeViewport} class="preview-tree" aria-label={copy.previewTreeLabel} onscroll={handleTreeScroll}>
       {#if treeLoading}
         <div class="preview-state">{copy.previewLoading}</div>
       {:else if treeError}
         <div class="preview-state error">{treeError}</div>
-      {:else if items.length === 0}
+      {:else if visibleRows.length === 0}
         <div class="preview-state">{copy.previewEmpty}</div>
       {:else}
-        {@render treeNodes(tree)}
+        <div class="preview-tree-virtual" style={`height: ${visibleRows.length * TREE_ROW_HEIGHT}px;`}>
+          {#each treeWindowRows as row, index (`${row.kind}-${row.node.entry.path}-${treeStartIndex + index}`)}
+            <div
+              class="preview-tree-row"
+              style={`top: ${(treeStartIndex + index) * TREE_ROW_HEIGHT}px;`}
+            >
+              {#if row.kind === "more"}
+                <button
+                  class="preview-tree-more"
+                  disabled={row.node.loading}
+                  style={`padding-left: ${10 + row.node.depth * 16}px;`}
+                  onclick={() => row.node.entry.path ? loadDirectoryChildren(row.node, row.node.nextOffset ?? 0) : loadRootMore()}
+                >
+                  <span>{row.node.loading ? copy.previewLoading : copy.previewLoadMore}</span>
+                </button>
+              {:else if row.node.entry.kind === "directory"}
+                <button
+                  class="preview-tree-folder"
+                  style={`padding-left: ${10 + row.node.depth * 16}px;`}
+                  onclick={() => toggleDirectory(row.node)}
+                >
+                  <span class="preview-tree-disclosure">{row.node.expanded ? "▾" : "▸"}</span>
+                  <span class="preview-tree-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path d="M3 6.5h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                      <path d="M3 8.5h18" />
+                    </svg>
+                  </span>
+                  <span>{row.node.entry.name}</span>
+                </button>
+              {:else}
+                <button
+                  class:active={selectedPath === row.node.entry.path}
+                  class="preview-tree-file"
+                  style={`padding-left: ${10 + row.node.depth * 16}px;`}
+                  onclick={() => selectFile(row.node.entry)}
+                >
+                  <span class="preview-tree-disclosure" aria-hidden="true"></span>
+                  <span class="preview-tree-icon" aria-hidden="true">
+                    {#if isImageEntry(row.node.entry)}
+                      <svg viewBox="0 0 24 24">
+                        <path d="M4 5.5h16v13H4z" />
+                        <path d="m7 15 3-3 3 3 2-2 3 3" />
+                        <circle cx="9" cy="9" r="1.2" />
+                      </svg>
+                    {:else}
+                      <svg viewBox="0 0 24 24">
+                        <path d="M7 3.5h7l4 4v13H7z" />
+                        <path d="M14 3.5v4h4" />
+                      </svg>
+                    {/if}
+                  </span>
+                  <span>{row.node.entry.name}</span>
+                </button>
+              {/if}
+            </div>
+          {/each}
+        </div>
       {/if}
     </div>
   </aside>
@@ -542,14 +680,15 @@
           <article class="preview-image-panel">
             <div class="preview-panel-toolbar">
               <div>
-                <button type="button" aria-label={copy.previewZoomOut} title={copy.previewZoomOut} onclick={() => previewZoomOut("before")}>-</button>
-                <button type="button" aria-label={copy.previewZoomReset} title={copy.previewZoomReset} onclick={resetPreviewPanzooms}>{previewPercent}</button>
-                <button type="button" aria-label={copy.previewZoomIn} title={copy.previewZoomIn} onclick={() => previewZoomIn("before")}>+</button>
-                <button type="button" aria-label={copy.previewZoom} title={copy.previewZoom} onclick={() => openZoom("before")}>
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="11" cy="11" r="6"></circle>
-                    <path d="M16 16l5 5"></path>
-                  </svg>
+                <button type="button" aria-label={copy.previewZoomOut} title={copy.previewZoomOut} onpointerup={releasePointerFocus} onclick={() => previewZoomOut("before")}>
+                  <Minus aria-hidden="true" />
+                </button>
+                <button type="button" aria-label={copy.previewZoomReset} title={copy.previewZoomReset} onpointerup={releasePointerFocus} onclick={resetPreviewPanzooms}>{previewPercent}</button>
+                <button type="button" aria-label={copy.previewZoomIn} title={copy.previewZoomIn} onpointerup={releasePointerFocus} onclick={() => previewZoomIn("before")}>
+                  <Plus aria-hidden="true" />
+                </button>
+                <button type="button" aria-label={copy.previewZoom} title={copy.previewZoom} onpointerup={releasePointerFocus} onclick={() => openZoom("before")}>
+                  <Search aria-hidden="true" />
                 </button>
               </div>
             </div>
@@ -573,14 +712,15 @@
           <article class="preview-image-panel">
             <div class="preview-panel-toolbar">
               <div>
-                <button type="button" aria-label={copy.previewZoomOut} title={copy.previewZoomOut} onclick={() => previewZoomOut("after")}>-</button>
-                <button type="button" aria-label={copy.previewZoomReset} title={copy.previewZoomReset} onclick={resetPreviewPanzooms}>{previewPercent}</button>
-                <button type="button" aria-label={copy.previewZoomIn} title={copy.previewZoomIn} onclick={() => previewZoomIn("after")}>+</button>
-                <button type="button" aria-label={copy.previewZoom} title={copy.previewZoom} onclick={() => openZoom("after")}>
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="11" cy="11" r="6"></circle>
-                    <path d="M16 16l5 5"></path>
-                  </svg>
+                <button type="button" aria-label={copy.previewZoomOut} title={copy.previewZoomOut} onpointerup={releasePointerFocus} onclick={() => previewZoomOut("after")}>
+                  <Minus aria-hidden="true" />
+                </button>
+                <button type="button" aria-label={copy.previewZoomReset} title={copy.previewZoomReset} onpointerup={releasePointerFocus} onclick={resetPreviewPanzooms}>{previewPercent}</button>
+                <button type="button" aria-label={copy.previewZoomIn} title={copy.previewZoomIn} onpointerup={releasePointerFocus} onclick={() => previewZoomIn("after")}>
+                  <Plus aria-hidden="true" />
+                </button>
+                <button type="button" aria-label={copy.previewZoom} title={copy.previewZoom} onpointerup={releasePointerFocus} onclick={() => openZoom("after")}>
+                  <Search aria-hidden="true" />
                 </button>
               </div>
             </div>
@@ -611,6 +751,7 @@
     bind:this={zoomDialog}
     class="preview-zoom-dialog"
     aria-label={`${zoomLabel} ${copy.previewZoom}`}
+    tabindex="-1"
     onclose={closeZoom}
     onclick={(event) => {
       if (event.target === zoomDialog) closeZoom();
@@ -627,17 +768,21 @@
         <span>{formatBytes(zoomImage.bytes)}</span>
       </div>
       <div class="preview-zoom-controls">
-        <button type="button" aria-label={copy.previewZoomOut} title={copy.previewZoomOut} onclick={zoomOut}>-</button>
+        <button type="button" aria-label={copy.previewZoomOut} title={copy.previewZoomOut} onclick={zoomOut}>
+          <Minus aria-hidden="true" />
+        </button>
         <button type="button" aria-label={copy.previewZoomReset} title={copy.previewZoomReset} onclick={resetZoomCanvas}>
           {zoomPercent}
         </button>
-        <button type="button" aria-label={copy.previewZoomIn} title={copy.previewZoomIn} onclick={zoomIn}>+</button>
+        <button type="button" aria-label={copy.previewZoomIn} title={copy.previewZoomIn} onclick={zoomIn}>
+          <Plus aria-hidden="true" />
+        </button>
         <button class="preview-zoom-close" type="button" aria-label={copy.closePreviewZoom} onclick={closeZoom}>
-          x
+          <X aria-hidden="true" />
         </button>
       </div>
     </header>
-    <div bind:this={zoomCanvas} class="preview-zoom-canvas" role="presentation">
+    <div bind:this={zoomCanvas} class="preview-zoom-canvas" role="presentation" tabindex="-1">
       <img
         bind:this={zoomElement}
         src={zoomUrl}
