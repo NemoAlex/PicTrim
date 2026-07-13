@@ -22,7 +22,7 @@ npm run release:package
 
 ## Release 文案模板
 
-```markdown
+````markdown
 ## Downloads
 
 - Windows: download the installer or portable zip.
@@ -35,7 +35,12 @@ These builds are unsigned. macOS or Windows may show a security warning the firs
 To verify the download, compare the file checksum with the `SHA256SUMS.txt` included in this release.
 
 Windows users may need to choose "More info", then "Run anyway" in SmartScreen.
-macOS users may need to try opening the app once, then allow it in "System Settings > Privacy & Security".
+
+Because the macOS build is unsigned, macOS may report that the app is damaged and cannot be opened. After moving PicTrim to the Applications folder, remove the download quarantine attribute in Terminal, then open the app again:
+
+```bash
+xattr -cr /Applications/PicTrim.app
+```
 
 ---
 
@@ -51,8 +56,13 @@ macOS users may need to try opening the app once, then allow it in "System Setti
 如需校验下载文件，请对照本 release 附带的 `SHA256SUMS.txt`。
 
 Windows 用户可能需要在 SmartScreen 中选择“更多信息”，然后选择“仍要运行”。
-macOS 用户可能需要首次尝试打开后，到“系统设置 > 隐私与安全性”中允许打开。
+
+由于 macOS 版本未签名，系统可能提示 App“已损坏，无法打开”。将 PicTrim 移至“应用程序”文件夹后，在终端中运行以下命令移除下载隔离属性，然后重新打开：
+
+```bash
+xattr -cr /Applications/PicTrim.app
 ```
+````
 
 ## 注意事项
 
