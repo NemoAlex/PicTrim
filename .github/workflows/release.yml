@@ -34,10 +34,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -101,7 +101,7 @@ jobs:
         run: ./scripts/sign-and-package-macos.sh
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: PicTrim-${{ matrix.name }}
           path: |
@@ -117,7 +117,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-artifacts
           merge-multiple: true
@@ -141,11 +141,7 @@ jobs:
             draft_flag="--draft"
           fi
 
-          gh release create "v${version}" release-artifacts/* \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "PicTrim v${version}" \
-            --notes-file - \
-            ${draft_flag} <<'EOF'
+          cat > release-notes.md <<'EOF'
           ## Downloads
 
           - Windows: download the installer or portable zip.
@@ -174,6 +170,23 @@ jobs:
 
           Windows 用户可能需要在 SmartScreen 中选择“更多信息”，然后选择“仍要运行”。
           EOF
+
+          tag="v${version}"
+          if gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "$tag" release-artifacts/* \
+              --clobber \
+              --repo "${GITHUB_REPOSITORY}"
+            gh release edit "$tag" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "PicTrim v${version}" \
+              --notes-file release-notes.md
+          else
+            gh release create "$tag" release-artifacts/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "PicTrim v${version}" \
+              --notes-file release-notes.md \
+              ${draft_flag}
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ github.event.inputs.version }}

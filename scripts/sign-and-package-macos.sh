@@ -52,6 +52,17 @@ printf '%s' "$MAC_CSC_LINK" | openssl base64 -d -A -out "$certificate_path"
 security create-keychain -p "$keychain_password" "$keychain_path"
 security unlock-keychain -p "$keychain_password" "$keychain_path"
 security set-keychain-settings -lut 21600 "$keychain_path"
+
+keychain_search_list=("$keychain_path")
+while IFS= read -r existing_keychain; do
+  existing_keychain="${existing_keychain//\"/}"
+  existing_keychain="${existing_keychain#"${existing_keychain%%[![:space:]]*}"}"
+  if [[ -n "$existing_keychain" && "$existing_keychain" != "$keychain_path" ]]; then
+    keychain_search_list+=("$existing_keychain")
+  fi
+done < <(security list-keychains -d user)
+security list-keychains -d user -s "${keychain_search_list[@]}"
+
 security import "$certificate_path" \
   -k "$keychain_path" \
   -P "$MAC_CSC_KEY_PASSWORD" \
@@ -64,7 +75,7 @@ security set-key-partition-list \
   "$keychain_path" >/dev/null
 
 identity="$(security find-identity -v -p codesigning "$keychain_path" \
-  | sed -nE 's/^[[:space:]]*[0-9]+\) ([A-F0-9]{40}) "Developer ID Application:.*$/\1/p' \
+  | sed -nE 's/^[[:space:]]*[0-9]+\) [A-F0-9]{40} "(Developer ID Application:.*)"$/\1/p' \
   | head -n 1)"
 if [[ -z "$identity" ]]; then
   echo "Error: the .p12 does not contain a valid Developer ID Application identity with its private key." >&2
