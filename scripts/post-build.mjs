@@ -12,6 +12,7 @@ const root = path.resolve(__dirname, '..');
 const targetDir = path.join(root, 'src-tauri', 'target', 'release');
 const releaseDir = path.join(root, 'release');
 const outDir = path.join(root, 'release', 'PicTrim');
+const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
@@ -70,7 +71,7 @@ function copyWindowsInstaller() {
   }
 
   const installer = installers[0];
-  const dest = path.join(releaseDir, installer.file);
+  const dest = path.join(releaseDir, `PicTrim-${version}-Windows-${process.arch}-Setup.exe`);
   fs.copyFileSync(installer.path, dest);
   console.log(`Installer ready: ${dest}`);
 }

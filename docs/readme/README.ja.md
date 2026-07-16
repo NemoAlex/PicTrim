@@ -79,14 +79,13 @@ $env:Path = "$env:VIPS_DIR\bin;$env:Path"
 ```bash
 npm install
 npm run tauri:build
-npm run release:package
 ```
 
-ビルド完了後、`release/PicTrim/` にポータブル版が生成されます。Windows ビルドでは NSIS インストーラーも生成され、`release/` にコピーされます。`npm run release:package` は GitHub Releases 用のポータブル zip と `SHA256SUMS.txt` を生成します。
+ビルド完了後、`release/PicTrim/` にローカル用のポータブル版が生成されます。GitHub Releases では、Apple Silicon／Intel 向けの署名・公証済み macOS DMG と Windows x64 インストーラーのみを公開します。
 
 ## リリースノート
 
-現在の GitHub Releases では未署名のバイナリを提供しています。macOS または Windows では初回起動時にセキュリティ警告が表示される場合があります。プロジェクトの Releases ページからダウンロードし、同梱の `SHA256SUMS.txt` でファイルの整合性を確認してください。
+macOS リリースビルドは Developer ID 証明書で署名され、Apple の公証を受けています。Windows ビルドは現在未署名のため、初回起動時に SmartScreen の警告が表示される場合があります。
 
 詳しいリリース手順は [../release.md](../release.md) を参照してください。
 

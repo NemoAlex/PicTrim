@@ -79,14 +79,13 @@ Sie können auch die [offizielle libvips-Installationsanleitung](https://www.lib
 ```bash
 npm install
 npm run tauri:build
-npm run release:package
 ```
 
-Nach Abschluss des Builds enthält `release/PicTrim/` die portable Version. Windows-Builds erzeugen zusätzlich einen NSIS-Installer und kopieren ihn nach `release/`. `npm run release:package` erzeugt die portable zip-Datei und `SHA256SUMS.txt` für GitHub Releases.
+Nach Abschluss des Builds enthält `release/PicTrim/` die lokale portable Version. GitHub Releases veröffentlichen ausschließlich signierte und von Apple notarisierte macOS-DMGs für Apple Silicon und Intel sowie den Windows-x64-Installer.
 
 ## Release-Hinweise
 
-Aktuelle GitHub Releases enthalten unsignierte Binärdateien. macOS oder Windows können beim ersten Start eine Sicherheitswarnung anzeigen. Laden Sie die Dateien von der Releases-Seite des Projekts herunter und prüfen Sie die Integrität mit der enthaltenen Datei `SHA256SUMS.txt`.
+macOS-Release-Builds sind mit einem Developer-ID-Zertifikat signiert und von Apple notarisiert. Windows-Builds sind derzeit nicht signiert und können beim ersten Start eine SmartScreen-Warnung anzeigen.
 
 Details zum Veröffentlichungsablauf finden Sie in [../release.md](../release.md).
 

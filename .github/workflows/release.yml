@@ -29,8 +29,13 @@ jobs:
         include:
           - name: windows-x64
             os: windows-latest
-          - name: macos
-            os: macos-latest
+            artifact: release/*.exe
+          - name: macos-arm64
+            os: macos-15
+            artifact: release/*.dmg
+          - name: macos-x64
+            os: macos-15-intel
+            artifact: release/*.dmg
 
     steps:
       - name: Checkout
@@ -86,10 +91,6 @@ jobs:
       - name: Build release artifacts
         run: npm run tauri:build
 
-      - name: Package Windows release artifacts
-        if: runner.os == 'Windows'
-        run: npm run release:package
-
       - name: Sign, notarize, and package macOS release artifacts
         if: runner.os == 'macOS'
         env:
@@ -104,10 +105,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: PicTrim-${{ matrix.name }}
-          path: |
-            release/*.zip
-            release/*.exe
-            release/*.dmg
+          path: ${{ matrix.artifact }}
           if-no-files-found: error
 
   publish:
@@ -122,15 +120,6 @@ jobs:
           path: release-artifacts
           merge-multiple: true
 
-      - name: Generate SHA256SUMS.txt
-        shell: bash
-        run: |
-          cd release-artifacts
-          find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.exe' -o -name '*.dmg' \) -print0 \
-            | sort -z \
-            | xargs -0 sha256sum \
-            | sed 's#  ./#  #' > SHA256SUMS.txt
-
       - name: Create GitHub Release
         shell: bash
         run: |
@@ -141,41 +130,27 @@ jobs:
             draft_flag="--draft"
           fi
 
-          cat > release-notes.md <<'EOF'
-          ## Downloads
-
-          - Windows: download the installer or portable zip.
-          - macOS: download the signed and notarized DMG, or the portable zip.
-
-          ## Security Notice
-
-          macOS builds are signed with a Developer ID certificate and notarized by Apple. Windows builds are currently unsigned and may show a SmartScreen warning the first time you open the app.
-
-          To verify the download, compare the file checksum with the `SHA256SUMS.txt` included in this release.
-
-          Windows users may need to choose "More info", then "Run anyway" in SmartScreen.
-
-          ---
-
-          ## 下载
-
-          - Windows：下载 installer 或 portable zip。
-          - macOS：下载已签名并通过 Apple 公证的 DMG，或 portable zip。
-
-          ## 安全提示
-
-          macOS 构建已使用 Developer ID 证书签名并通过 Apple 公证。Windows 构建目前尚未签名，首次打开时可能显示 SmartScreen 警告。
-
-          如需校验下载文件，请对照本 release 附带的 `SHA256SUMS.txt`。
-
-          Windows 用户可能需要在 SmartScreen 中选择“更多信息”，然后选择“仍要运行”。
-          EOF
-
           tag="v${version}"
           if gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "$tag" release-artifacts/* \
               --clobber \
               --repo "${GITHUB_REPOSITORY}"
+
+            while IFS= read -r asset; do
+              if [ ! -f "release-artifacts/${asset}" ]; then
+                gh release delete-asset "$tag" "$asset" \
+                  --yes \
+                  --repo "${GITHUB_REPOSITORY}"
+              fi
+            done < <(gh release view "$tag" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json assets \
+              --jq '.assets[].name')
+
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$tag" \
+              --jq '.body' > release-notes.md
             gh release edit "$tag" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "PicTrim v${version}" \
@@ -184,7 +159,7 @@ jobs:
             gh release create "$tag" release-artifacts/* \
               --repo "${GITHUB_REPOSITORY}" \
               --title "PicTrim v${version}" \
-              --notes-file release-notes.md \
+              --generate-notes \
               ${draft_flag}
           fi
         env:

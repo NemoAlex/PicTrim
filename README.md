@@ -81,14 +81,13 @@ You can also refer to the [official libvips installation guide](https://www.libv
 ```bash
 npm install
 npm run tauri:build
-npm run release:package
 ```
 
-After the build finishes, `release/PicTrim/` contains the portable build. Windows builds also create an NSIS installer and copy it into `release/`. `npm run release:package` generates the portable zip and `SHA256SUMS.txt` for GitHub Releases.
+After the build finishes, `release/PicTrim/` contains the local portable build. GitHub Releases publish only the signed and notarized macOS DMGs for Apple Silicon and Intel, plus the Windows x64 installer.
 
 ## Release Notes
 
-Current GitHub Releases provide unsigned binaries. macOS or Windows may show a security warning on first launch. Download from the project Releases page and verify file integrity with the bundled `SHA256SUMS.txt`.
+macOS release builds are signed with a Developer ID certificate and notarized by Apple. Windows builds are currently unsigned and may show a SmartScreen warning on first launch.
 
 See [docs/release.md](docs/release.md) for the detailed release workflow.
 

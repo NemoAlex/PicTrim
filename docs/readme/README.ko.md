@@ -79,14 +79,13 @@ $env:Path = "$env:VIPS_DIR\bin;$env:Path"
 ```bash
 npm install
 npm run tauri:build
-npm run release:package
 ```
 
-빌드가 끝나면 `release/PicTrim/`에 포터블 빌드가 생성됩니다. Windows 빌드는 NSIS 설치 프로그램도 생성하여 `release/`에 복사합니다. `npm run release:package`는 GitHub Releases용 포터블 zip과 `SHA256SUMS.txt`를 생성합니다.
+빌드가 끝나면 `release/PicTrim/`에 로컬 포터블 빌드가 생성됩니다. GitHub Releases에는 Apple Silicon 및 Intel용으로 서명·공증된 macOS DMG와 Windows x64 설치 프로그램만 게시됩니다.
 
 ## 릴리스 노트
 
-현재 GitHub Releases는 서명되지 않은 바이너리를 제공합니다. macOS 또는 Windows에서 처음 실행할 때 보안 경고가 표시될 수 있습니다. 프로젝트 Releases 페이지에서 다운로드하고, 함께 제공되는 `SHA256SUMS.txt`로 파일 무결성을 확인하세요.
+macOS 릴리스 빌드는 Developer ID 인증서로 서명되고 Apple 공증을 받습니다. Windows 빌드는 현재 서명되지 않아 처음 실행할 때 SmartScreen 경고가 표시될 수 있습니다.
 
 자세한 릴리스 절차는 [../release.md](../release.md)를 참고하세요.
 

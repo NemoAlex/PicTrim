@@ -117,16 +117,12 @@ xcrun stapler staple "$app_path"
 xcrun stapler validate "$app_path"
 spctl --assess --type execute --verbose=4 "$app_path"
 
-echo "Creating portable archive..."
-cd "$root"
-npm run release:package
-
 echo "Creating signed and notarized DMG..."
 dmg_stage="$work_dir/dmg"
 mkdir -p "$dmg_stage"
 ditto "$app_path" "$dmg_stage/PicTrim.app"
 ln -s /Applications "$dmg_stage/Applications"
-dmg_path="$release_dir/PicTrim-${version}-macos-${arch}.dmg"
+dmg_path="$release_dir/PicTrim-${version}-macOS-${arch}.dmg"
 rm -f "$dmg_path"
 hdiutil create \
   -volname "PicTrim ${version}" \

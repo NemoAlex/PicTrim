@@ -1,71 +1,47 @@
 # 发布指南
 
-PicTrim 当前通过 GitHub Releases 发布未签名二进制文件。这适合开源项目的早期版本，但 macOS 和 Windows 可能在首次打开时显示安全提示。
+PicTrim 的 GitHub Release 只提供三个面向用户的安装包：
 
-## 构建
+- `PicTrim-<version>-macOS-arm64.dmg`
+- `PicTrim-<version>-macOS-x64.dmg`
+- `PicTrim-<version>-Windows-x64-Setup.exe`
 
-在每个目标平台分别构建：
+macOS DMG 使用 Developer ID 证书签名并通过 Apple 公证。Windows 安装程序目前尚未签名。
+
+## 发布
+
+发布前保持 `package.json` 和 `src-tauri/tauri.conf.json` 中的版本号一致，然后推送对应的 `v<version>` 标签。Release 工作流会：
+
+1. 在 Apple Silicon、Intel Mac 和 Windows x64 runner 上分别构建。
+2. 签名并公证两个 macOS App 与 DMG。
+3. 只上传两个 DMG 和一个 Windows 安装程序。
+4. 使用 GitHub 自动生成的 Release Notes。
+
+也可以在 Actions 页面手动运行 Release 工作流并填写版本号。重新发布已有版本时，工作流会替换三个安装包，并删除该 Release 中不再生成的旧附件。
+
+## macOS 签名配置
+
+仓库需要配置以下 Actions Secrets：
+
+- `MAC_CSC_LINK`
+- `MAC_CSC_KEY_PASSWORD`
+- `APPLE_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+- `APPLE_TEAM_ID`
+
+可以在持有 Developer ID Application 证书的 Mac 上运行以下脚本进行配置：
+
+```bash
+./scripts/configure-macos-signing-secrets.sh NemoAlex/PicTrim
+```
+
+签名、公证或 Gatekeeper 验证失败时，macOS 构建会直接失败，不会发布未签名的 DMG。
+
+## 本地构建
 
 ```bash
 npm install
 npm run tauri:build
-npm run release:package
 ```
 
-上传 `release/` 目录中的文件到 GitHub Release：
-
-- `PicTrim-<version>-<platform>-<arch>-portable.zip`
-- Windows 构建时生成的 NSIS 安装包
-- `SHA256SUMS.txt`
-
-如果重复构建同一个版本，发布前建议清理旧的 `release/` 目录，避免上传或校验旧产物。
-
-## Release 文案模板
-
-````markdown
-## Downloads
-
-- Windows: download the installer or portable zip.
-- macOS: download the portable zip.
-
-## Security Notice
-
-These builds are unsigned. macOS or Windows may show a security warning the first time you open the app.
-
-To verify the download, compare the file checksum with the `SHA256SUMS.txt` included in this release.
-
-Windows users may need to choose "More info", then "Run anyway" in SmartScreen.
-
-Because the macOS build is unsigned, macOS may report that the app is damaged and cannot be opened. After moving PicTrim to the Applications folder, remove the download quarantine attribute in Terminal, then open the app again:
-
-```bash
-xattr -cr /Applications/PicTrim.app
-```
-
----
-
-## 下载
-
-- Windows：下载 installer 或 portable zip。
-- macOS：下载 portable zip。
-
-## 安全提示
-
-这些构建未进行代码签名。macOS 或 Windows 首次打开时可能显示安全提示。
-
-如需校验下载文件，请对照本 release 附带的 `SHA256SUMS.txt`。
-
-Windows 用户可能需要在 SmartScreen 中选择“更多信息”，然后选择“仍要运行”。
-
-由于 macOS 版本未签名，系统可能提示 App“已损坏，无法打开”。将 PicTrim 移至“应用程序”文件夹后，在终端中运行以下命令移除下载隔离属性，然后重新打开：
-
-```bash
-xattr -cr /Applications/PicTrim.app
-```
-````
-
-## 注意事项
-
-- 保持 `package.json` 和 `src-tauri/tauri.conf.json` 中的版本号一致。
-- Windows 安装包需要在 Windows 上构建，以便打包 libvips DLL。
-- macOS 应用需要在 macOS 上构建，以便打包 libvips dylib。
+本地构建仍会在 `release/PicTrim/` 生成便携目录，但 GitHub Release 不会上传 portable ZIP 或 `SHA256SUMS.txt`。
