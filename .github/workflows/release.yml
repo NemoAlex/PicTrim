@@ -86,8 +86,19 @@ jobs:
       - name: Build release artifacts
         run: npm run tauri:build
 
-      - name: Package release artifacts
+      - name: Package Windows release artifacts
+        if: runner.os == 'Windows'
         run: npm run release:package
+
+      - name: Sign, notarize, and package macOS release artifacts
+        if: runner.os == 'macOS'
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: ./scripts/sign-and-package-macos.sh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -138,42 +149,30 @@ jobs:
           ## Downloads
 
           - Windows: download the installer or portable zip.
-          - macOS: download the portable zip.
+          - macOS: download the signed and notarized DMG, or the portable zip.
 
           ## Security Notice
 
-          These builds are unsigned. macOS or Windows may show a security warning the first time you open the app.
+          macOS builds are signed with a Developer ID certificate and notarized by Apple. Windows builds are currently unsigned and may show a SmartScreen warning the first time you open the app.
 
           To verify the download, compare the file checksum with the `SHA256SUMS.txt` included in this release.
 
           Windows users may need to choose "More info", then "Run anyway" in SmartScreen.
-
-          Because the macOS build is unsigned, macOS may report that the app is damaged and cannot be opened. After moving PicTrim to the Applications folder, remove the download quarantine attribute in Terminal, then open the app again:
-
-          ```bash
-          xattr -cr /Applications/PicTrim.app
-          ```
 
           ---
 
           ## 下载
 
           - Windows：下载 installer 或 portable zip。
-          - macOS：下载 portable zip。
+          - macOS：下载已签名并通过 Apple 公证的 DMG，或 portable zip。
 
           ## 安全提示
 
-          这些构建未进行代码签名。macOS 或 Windows 首次打开时可能显示安全提示。
+          macOS 构建已使用 Developer ID 证书签名并通过 Apple 公证。Windows 构建目前尚未签名，首次打开时可能显示 SmartScreen 警告。
 
           如需校验下载文件，请对照本 release 附带的 `SHA256SUMS.txt`。
 
           Windows 用户可能需要在 SmartScreen 中选择“更多信息”，然后选择“仍要运行”。
-
-          由于 macOS 版本未签名，系统可能提示 App“已损坏，无法打开”。将 PicTrim 移至“应用程序”文件夹后，在终端中运行以下命令移除下载隔离属性，然后重新打开：
-
-          ```bash
-          xattr -cr /Applications/PicTrim.app
-          ```
           EOF
         env:
           GH_TOKEN: ${{ github.token }}

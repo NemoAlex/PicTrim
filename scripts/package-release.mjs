@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Packages unsigned release artifacts and writes SHA256SUMS.txt for GitHub Releases.
+// Packages release artifacts and writes SHA256SUMS.txt for GitHub Releases.
 
 import crypto from 'crypto';
 import fs from 'fs';
