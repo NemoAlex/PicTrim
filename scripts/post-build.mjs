@@ -6,6 +6,10 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { copyWindowsVipsDlls } from './libvips-windows.mjs';
+import {
+  bundleMacOSDylibs,
+  findMacOSAppExecutable,
+} from './macos-dylibs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -91,80 +95,14 @@ function buildMacOS() {
     fs.copyFileSync(bin, path.join(outDir, 'PicTrim'));
   }
 
-  const vipsLib = findVipsOnMacOS();
-  if (!vipsLib) {
-    console.warn('Warning: could not find libvips libraries.');
-    return;
-  }
-
   const isApp = fs.existsSync(path.join(outDir, 'PicTrim.app'));
   const binary = isApp
-    ? path.join(outDir, 'PicTrim.app', 'Contents', 'MacOS', 'PicTrim')
+    ? findMacOSAppExecutable(path.join(outDir, 'PicTrim.app'))
     : path.join(outDir, 'PicTrim');
   const frameworksDir = isApp
     ? path.join(outDir, 'PicTrim.app', 'Contents', 'Frameworks')
     : outDir;
 
-  if (!fs.existsSync(frameworksDir)) fs.mkdirSync(frameworksDir, { recursive: true });
-
-  // Add rpath pointing to the Frameworks directory
-  const rpath = isApp ? '@loader_path/../Frameworks' : '@loader_path';
-  addRpath(binary, rpath);
-
-  const count = collectDylibs(binary, frameworksDir, vipsLib, rpath);
-  console.log(`Copied and fixed ${count} dylibs`);
-}
-
-function findVipsOnMacOS() {
-  try {
-    return execSync('pkg-config --variable=libdir vips', { encoding: 'utf-8' }).trim();
-  } catch {}
-  for (const p of ['/opt/homebrew/lib', '/usr/local/lib']) {
-    if (fs.existsSync(path.join(p, 'libvips.dylib'))) return p;
-  }
-  return null;
-}
-
-function addRpath(binary, rpath) {
-  try {
-    const output = execSync(`otool -l "${binary}"`, { encoding: 'utf-8' });
-    if (output.includes(rpath)) return;
-  } catch {}
-  execSync(`install_name_tool -add_rpath "${rpath}" "${binary}"`);
-}
-
-function collectDylibs(binary, outDir, libDir, rpath) {
-  const seen = new Set();
-  const queue = [binary];
-  let count = 0;
-
-  while (queue.length > 0) {
-    const target = queue.shift();
-    let output;
-    try {
-      output = execSync(`otool -L "${target}"`, { encoding: 'utf-8' });
-    } catch { continue; }
-
-    for (const line of output.split('\n').slice(1)) {
-      const lib = line.trim().split(' ')[0];
-      if (seen.has(lib) || !lib.startsWith(libDir)) continue;
-      seen.add(lib);
-
-      const name = path.basename(lib);
-      const dest = path.join(outDir, name);
-      if (!fs.existsSync(dest)) {
-        fs.copyFileSync(lib, dest);
-        count++;
-      }
-
-      // Fix reference in the target
-      execSync(`install_name_tool -change "${lib}" "@rpath/${name}" "${target}"`);
-      // Fix id of the copied dylib
-      execSync(`install_name_tool -id @rpath/${name} "${dest}"`);
-
-      // Scan transitive dependencies
-      queue.push(dest);
-    }
-  }
-  return count;
+  const count = bundleMacOSDylibs(binary, frameworksDir);
+  console.log(`Copied, relinked, and verified ${count} external dylibs`);
 }

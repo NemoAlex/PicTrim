@@ -41,8 +41,13 @@ work_dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/pictrim-sign.XXXXXX")"
 keychain_path="$work_dir/signing.keychain-db"
 certificate_path="$work_dir/developer-id.p12"
 keychain_password="$(openssl rand -base64 32)"
+verify_mount="$work_dir/verify-mount"
+dmg_mounted=false
 
 cleanup() {
+  if [[ "$dmg_mounted" == "true" ]]; then
+    hdiutil detach "$verify_mount" >/dev/null 2>&1 || true
+  fi
   security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
   rm -rf "$work_dir"
 }
@@ -83,8 +88,14 @@ if [[ -z "$identity" ]]; then
   exit 1
 fi
 
+dmg_stage="$work_dir/dmg"
+staged_app="$dmg_stage/PicTrim.app"
+mkdir -p "$dmg_stage"
+ditto "$app_path" "$staged_app"
+node "$root/scripts/verify-macos-app.mjs" "$staged_app"
+
 echo "Signing nested macOS libraries..."
-frameworks_path="$app_path/Contents/Frameworks"
+frameworks_path="$staged_app/Contents/Frameworks"
 if [[ -d "$frameworks_path" ]]; then
   while IFS= read -r -d '' candidate; do
     if file "$candidate" | grep -q 'Mach-O'; then
@@ -103,24 +114,22 @@ codesign --force \
   --timestamp \
   --sign "$identity" \
   --keychain "$keychain_path" \
-  "$app_path"
-codesign --verify --deep --strict --verbose=2 "$app_path"
+  "$staged_app"
+codesign --verify --deep --strict --verbose=2 "$staged_app"
 
 notary_zip="$work_dir/PicTrim-notarization.zip"
-ditto -c -k --keepParent "$app_path" "$notary_zip"
+ditto -c -k --keepParent "$staged_app" "$notary_zip"
 xcrun notarytool submit "$notary_zip" \
   --apple-id "$APPLE_ID" \
   --password "$APPLE_APP_SPECIFIC_PASSWORD" \
   --team-id "$APPLE_TEAM_ID" \
   --wait
-xcrun stapler staple "$app_path"
-xcrun stapler validate "$app_path"
-spctl --assess --type execute --verbose=4 "$app_path"
+xcrun stapler staple "$staged_app"
+xcrun stapler validate "$staged_app"
+codesign --verify --deep --strict --verbose=2 "$staged_app"
+spctl --assess --type execute --verbose=4 "$staged_app"
 
 echo "Creating signed and notarized DMG..."
-dmg_stage="$work_dir/dmg"
-mkdir -p "$dmg_stage"
-ditto "$app_path" "$dmg_stage/PicTrim.app"
 ln -s /Applications "$dmg_stage/Applications"
 dmg_path="$release_dir/PicTrim-${version}-macOS-${arch}.dmg"
 rm -f "$dmg_path"
@@ -147,5 +156,21 @@ spctl --assess --type open \
   --context context:primary-signature \
   --verbose=4 \
   "$dmg_path"
+
+echo "Verifying the application inside the finished DMG..."
+mkdir -p "$verify_mount"
+hdiutil attach \
+  -nobrowse \
+  -readonly \
+  -mountpoint "$verify_mount" \
+  "$dmg_path" >/dev/null
+dmg_mounted=true
+mounted_app="$verify_mount/PicTrim.app"
+codesign --verify --deep --strict --verbose=2 "$mounted_app"
+xcrun stapler validate "$mounted_app"
+spctl --assess --type execute --verbose=4 "$mounted_app"
+node "$root/scripts/verify-macos-app.mjs" "$mounted_app"
+hdiutil detach "$verify_mount" >/dev/null
+dmg_mounted=false
 
 echo "Signed and notarized macOS artifacts are ready in $release_dir"
