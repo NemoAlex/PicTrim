@@ -1,6 +1,6 @@
 [package]
 name = "pictrim"
-version = "0.1.5"
+version = "0.1.6"
 description = "Fast batch image resizing"
 authors = ["PicTrim"]
 license = "MIT"
