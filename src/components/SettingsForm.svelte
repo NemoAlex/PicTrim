@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import {
     classifySources,
+    isSupportedInputFile,
     onSourceDrop,
     pickDirectories,
     pickDirectory,
@@ -58,7 +59,7 @@
   onMount(() => {
     refreshSources();
     const unlisteners: Array<() => void> = [];
-    onSourceDrop(addSources).then((unlisten) => unlisteners.push(unlisten));
+    onSourceDrop((paths) => void addSources(paths)).then((unlisten) => unlisteners.push(unlisten));
     return () => {
       for (const unlisten of unlisteners) unlisten();
       if (previewTimer) window.clearTimeout(previewTimer);
@@ -78,24 +79,28 @@
     sources = settings.inputSources.length > 0 ? await classifySources(settings.inputSources) : [];
   }
 
-  function addSources(paths: string[]) {
+  async function addSources(paths: string[]) {
+    const entries = await classifySources(paths);
     const seen = new Set(settings.inputSources);
     const next = [...settings.inputSources];
-    for (const path of paths) {
-      if (!seen.has(path)) {
-        seen.add(path);
-        next.push(path);
+    for (const entry of entries) {
+      if (entry.kind === "missing" || (entry.kind === "file" && !isSupportedInputFile(entry.path))) {
+        continue;
+      }
+      if (!seen.has(entry.path)) {
+        seen.add(entry.path);
+        next.push(entry.path);
       }
     }
     settings.inputSources = next;
   }
 
   async function addFiles() {
-    addSources(await pickFiles());
+    await addSources(await pickFiles());
   }
 
   async function addDirectories() {
-    addSources(await pickDirectories());
+    await addSources(await pickDirectories());
   }
 
   async function pickOutput() {

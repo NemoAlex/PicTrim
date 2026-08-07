@@ -14,6 +14,24 @@ import type {
   WarningEntry,
 } from "./types";
 
+const SUPPORTED_INPUT_EXTENSIONS = [
+  "jpg",
+  "jpeg",
+  "png",
+  "webp",
+  "bmp",
+  "tif",
+  "tiff",
+  "gif",
+  "jfif",
+  "pdf",
+];
+
+export function isSupportedInputFile(path: string): boolean {
+  const extension = path.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase();
+  return Boolean(extension && SUPPORTED_INPUT_EXTENSIONS.includes(extension));
+}
+
 export function startBatch(settings: BatchSettings): Promise<void> {
   return invoke("start_batch", { settings });
 }
@@ -77,12 +95,19 @@ export async function pickFiles(): Promise<string[]> {
     directory: false,
     multiple: true,
     title: copy.selectFilesTitle,
+    filters: [
+      {
+        name: copy.selectFilesTitle,
+        extensions: SUPPORTED_INPUT_EXTENSIONS,
+      },
+    ],
   });
-  return Array.isArray(selected)
+  const paths = Array.isArray(selected)
     ? selected.filter((path): path is string => typeof path === "string")
     : typeof selected === "string"
       ? [selected]
       : [];
+  return paths.filter(isSupportedInputFile);
 }
 
 export function onSourceDrop(callback: (paths: string[]) => void): Promise<UnlistenFn> {
