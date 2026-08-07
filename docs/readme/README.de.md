@@ -15,6 +15,14 @@ PicTrim ist ein leistungsstarkes Tool zur Stapelverarbeitung von Bildern. Es unt
 - Export als JPG, PNG oder WebP oder Beibehaltung des Originalformats.
 - Einstellungen für Qualität, Drehung, Parallelität, Vergrößerung und vorhandene Dateien.
 - Ordnerstruktur bleibt erhalten, mit Live-Fortschritt, Statistiken, Protokollen und Fehlerliste.
+- Verarbeitet in PDF-Seiteninhalte eingebettete Bilder, einschließlich verschachtelter Form XObjects und Inline-Bilder.
+
+## PDF-Verhalten
+
+- „Originalformat behalten“ behält den PDF-Container und ersetzt nur Seitenbilder. Text, Vektoren, Links, Formulare, Seitengröße und Platzierung bleiben erhalten.
+- JPG / PNG / WebP verwirft die übrigen PDF-Inhalte und exportiert jedes eindeutige Bild einmal nach `<PDF-Name>/page-0001-image-0001.ext`.
+- Unterstützt werden JPEG, JPX, Flate, LZW, Gray/RGB/CMYK/Indexed/ICCBased, 8-Bit-Samples und übliche Masken. Eine PDF-Vorschau ist noch nicht verfügbar.
+- PDFs mit nicht leerem Passwort schlagen ohne Ausgabe fehl. Signaturfelder bleiben erhalten, die ursprüngliche Signatur wird jedoch ungültig.
 
 ## Leistung
 

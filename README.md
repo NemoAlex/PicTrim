@@ -4,7 +4,7 @@
 
 [English](README.md) | [中文](docs/readme/README.zh-CN.md) | [日本語](docs/readme/README.ja.md) | [한국어](docs/readme/README.ko.md) | [Français](docs/readme/README.fr.md) | [Deutsch](docs/readme/README.de.md)
 
-PicTrim is a high-performance batch image processing tool for resizing, compressing, rotating, and converting images.
+PicTrim is a high-performance batch image and PDF-embedded-image processing tool for resizing, compressing, rotating, and converting images.
 
 ## Screenshot
 
@@ -17,6 +17,16 @@ PicTrim is a high-performance batch image processing tool for resizing, compress
 - Export JPG, PNG, and WebP, or keep the original format.
 - Configure quality, rotation, concurrency, upscaling, existing-file handling, and non-image file handling.
 - Preserve folder structure while showing live progress, stats, logs, and failures.
+- Process images embedded in PDF page content, including nested Form XObjects and inline images.
+
+## PDF behavior
+
+- **Keep original** keeps the PDF container and page layout, replacing only page-content images. Text, vectors, links, forms, page sizes, and placement matrices are retained.
+- **JPG / PNG / WebP** discards the rest of the PDF and exports each unique embedded image once to `<PDF name>/page-0001-image-0001.ext`.
+- Supported in the first release: JPEG, JPX, Flate, and LZW streams; Gray, RGB, CMYK, Indexed, and ICCBased color spaces; 8-bit samples; soft masks and common image masks.
+- Thumbnails, attachments, annotations, and form appearance images are not processed. PDF files are not shown in Preview yet.
+- PDFs that require a non-empty password fail without output. Empty-password encryption is retained. Editing a signed PDF retains its signature field but invalidates the original signature and emits a warning.
+- An unsupported or damaged target image fails the whole PDF. Temporary files/directories prevent partial results from being published.
 
 ## Performance
 
@@ -59,7 +69,7 @@ cd src-tauri
 cargo check
 ```
 
-Building or linking the Rust binary requires libvips to be installed locally.
+Building or linking the Rust binary requires libvips to be installed locally. QPDF 12.3.2, zlib 1.3.1, and IJG libjpeg 9f are pinned and built statically; QPDF, CMake, and libclang do not need to be installed.
 
 macOS:
 
@@ -93,4 +103,4 @@ See [docs/release.md](docs/release.md) for the detailed release workflow.
 
 ## License
 
-PicTrim is released under the [MIT License](LICENSE).
+PicTrim is released under the [MIT License](LICENSE). Bundled dependency notices are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

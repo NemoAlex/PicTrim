@@ -15,6 +15,14 @@ PicTrim est un outil performant de traitement d'images par lot. Il permet de red
 - Exportez en JPG, PNG ou WebP, ou conservez le format d'origine.
 - Configurez la qualité, la rotation, la concurrence, l'agrandissement et la gestion des fichiers existants.
 - Conservez la structure des dossiers avec progression, statistiques, journaux et échecs en temps réel.
+- Traitez les images intégrées au contenu des pages PDF, y compris les Form XObjects imbriqués et les inline images.
+
+## Comportement PDF
+
+- « Conserver l’original » garde le conteneur PDF et remplace uniquement les images des pages. Texte, vecteurs, liens, formulaires, dimensions et placement sont conservés.
+- JPG / PNG / WebP ignore le reste du PDF et exporte chaque image unique une fois dans `<nom PDF>/page-0001-image-0001.ext`.
+- La première version prend en charge JPEG, JPX, Flate, LZW, Gray/RGB/CMYK/Indexed/ICCBased, les échantillons 8 bits et les masques courants. L’aperçu PDF n’est pas encore disponible.
+- Un PDF protégé par un mot de passe non vide échoue sans sortie. Les champs de signature sont conservés, mais la signature d’origine devient invalide.
 
 ## Performances
 

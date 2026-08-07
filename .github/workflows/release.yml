@@ -88,8 +88,42 @@ jobs:
           echo "VIPS_DIR=$($vipsDir.FullName)" >> $env:GITHUB_ENV
           echo "$($vipsDir.FullName)\bin" >> $env:GITHUB_PATH
 
+      - name: Check frontend
+        run: npm run check
+
+      - name: Run Rust and PDF smoke tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
       - name: Build release artifacts
         run: npm run tauri:build
+
+      - name: Verify macOS dependency closure and static QPDF linkage
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          node scripts/verify-macos-app.mjs release/PicTrim/PicTrim.app
+          executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' release/PicTrim/PicTrim.app/Contents/Info.plist)"
+          binary="release/PicTrim/PicTrim.app/Contents/MacOS/${executable_name}"
+          if otool -L "$binary" | grep -i qpdf; then
+            echo "Unexpected dynamic QPDF dependency" >&2
+            exit 1
+          fi
+
+      - name: Verify Windows has no dynamic QPDF dependency
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = "release\PicTrim\PicTrim.exe"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          if (-not $dumpbin) {
+            throw "Could not locate dumpbin.exe"
+          }
+          $dependencies = & $dumpbin /DEPENDENTS $binary
+          if ($dependencies -match "qpdf") {
+            throw "Unexpected dynamic QPDF dependency"
+          }
 
       - name: Sign, notarize, and package macOS release artifacts
         if: runner.os == 'macOS'
