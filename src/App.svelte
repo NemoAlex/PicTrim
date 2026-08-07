@@ -10,7 +10,7 @@
   import { toNumber } from "./lib/format";
   import { getCopy, getCopyForLanguage, locale, localizeBackendMessage, outputFormatLabel, phaseTitle, setLanguage, supportedLanguages, syncDocumentLanguage } from "./lib/i18n.svelte";
   import type { Language } from "./lib/i18n.svelte";
-  import { cancelBatch, loadSettings, onFailures, onProgress, onWarnings, saveSettings, startBatch } from "./lib/tauri";
+  import { cancelBatch, defaultOutputDirectory, loadSettings, onFailures, onProgress, onWarnings, saveSettings, startBatch } from "./lib/tauri";
   import type { BatchProgress, BatchSettings, FailureEntry, WarningEntry } from "./lib/types";
 
   const DEFAULT_CONCURRENCY = navigator.hardwareConcurrency || 8;
@@ -74,6 +74,8 @@
   let scrollThumbHeight = $state(48);
   let scrollHideTimer: number | undefined;
   let languageMenuOpen = $state(false);
+  let outputPresetRequest = 0;
+  let previousFirstSource: string | undefined;
 
   onMount(() => {
     syncDocumentLanguage();
@@ -105,6 +107,26 @@
       saveSettings(JSON.parse(snapshot)).catch((error) => addLog(copy.saveSettingsFailed(String(error))));
     }, 350);
     return () => window.clearTimeout(timer);
+  });
+
+  $effect(() => {
+    const firstSource = settings.inputSources[0];
+    if (firstSource === previousFirstSource) return;
+    previousFirstSource = firstSource;
+    const request = ++outputPresetRequest;
+    if (!firstSource) {
+      settings.outputDir = "";
+      return;
+    }
+    void defaultOutputDirectory(firstSource)
+      .then((path) => {
+        if (request === outputPresetRequest && settings.inputSources[0] === firstSource) {
+          settings.outputDir = path;
+        }
+      })
+      .catch(() => {
+        if (request === outputPresetRequest) settings.outputDir = "";
+      });
   });
 
   $effect(() => {

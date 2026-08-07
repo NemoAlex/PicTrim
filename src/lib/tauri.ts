@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { dirname, join } from "@tauri-apps/api/path";
 import { getCopy } from "./i18n.svelte";
 import type {
   BatchProgress,
@@ -30,6 +31,10 @@ const SUPPORTED_INPUT_EXTENSIONS = [
 export function isSupportedInputFile(path: string): boolean {
   const extension = path.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase();
   return Boolean(extension && SUPPORTED_INPUT_EXTENSIONS.includes(extension));
+}
+
+export async function defaultOutputDirectory(sourcePath: string): Promise<string> {
+  return join(await dirname(sourcePath), "Output");
 }
 
 export function startBatch(settings: BatchSettings): Promise<void> {
