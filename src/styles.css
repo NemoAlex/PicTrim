@@ -1962,6 +1962,11 @@ label > span {
   font-weight: 700;
 }
 
+.warning-panel .error-head span,
+.warning-panel .failure strong {
+  color: var(--amber);
+}
+
 .failures {
   overflow: auto;
   max-height: 200px;

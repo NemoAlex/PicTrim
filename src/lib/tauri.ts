@@ -11,6 +11,7 @@ import type {
   PreviewPair,
   PreviewTree,
   SourceEntry,
+  WarningEntry,
 } from "./types";
 
 export function startBatch(settings: BatchSettings): Promise<void> {
@@ -98,4 +99,8 @@ export function onProgress(callback: (progress: BatchProgress) => void): Promise
 
 export function onFailures(callback: (failures: FailureEntry[]) => void): Promise<UnlistenFn> {
   return listen<FailureEntry[]>("batch-failures", (event) => callback(event.payload));
+}
+
+export function onWarnings(callback: (warnings: WarningEntry[]) => void): Promise<UnlistenFn> {
+  return listen<WarningEntry[]>("batch-warnings", (event) => callback(event.payload));
 }

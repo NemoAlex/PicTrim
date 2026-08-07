@@ -5,12 +5,13 @@
   import ProgressStats from "./components/ProgressStats.svelte";
   import LogList from "./components/LogList.svelte";
   import FailureList from "./components/FailureList.svelte";
+  import WarningList from "./components/WarningList.svelte";
   import PreviewView from "./components/PreviewView.svelte";
   import { toNumber } from "./lib/format";
   import { getCopy, getCopyForLanguage, locale, localizeBackendMessage, outputFormatLabel, phaseTitle, setLanguage, supportedLanguages, syncDocumentLanguage } from "./lib/i18n.svelte";
   import type { Language } from "./lib/i18n.svelte";
-  import { cancelBatch, loadSettings, onFailures, onProgress, saveSettings, startBatch } from "./lib/tauri";
-  import type { BatchProgress, BatchSettings, FailureEntry } from "./lib/types";
+  import { cancelBatch, loadSettings, onFailures, onProgress, onWarnings, saveSettings, startBatch } from "./lib/tauri";
+  import type { BatchProgress, BatchSettings, FailureEntry, WarningEntry } from "./lib/types";
 
   const DEFAULT_CONCURRENCY = navigator.hardwareConcurrency || 8;
   const DEFAULT_SETTINGS: BatchSettings = {
@@ -42,6 +43,7 @@
   let currentFile = $state("");
   let progress = $state<BatchProgress | null>(null);
   let failures = $state<FailureEntry[]>([]);
+  let warnings = $state<WarningEntry[]>([]);
   let logs = $state<string[]>([]);
   let lastLogSignature = "";
 
@@ -79,6 +81,7 @@
     const handleResize = () => updateScrollIndicator();
     onProgress(handleProgress).then((unlisten) => unlisteners.push(unlisten));
     onFailures(handleFailures).then((unlisten) => unlisteners.push(unlisten));
+    onWarnings((entries) => (warnings = entries)).then((unlisten) => unlisteners.push(unlisten));
     window.addEventListener("resize", handleResize);
     loadSettings()
       .then((saved) => {
@@ -207,6 +210,7 @@
     logs = [];
     lastLogSignature = "";
     failures = [];
+    warnings = [];
     progress = null;
 
     const payload: BatchSettings = {
@@ -257,6 +261,7 @@
     previewOpen = false;
     progress = null;
     failures = [];
+    warnings = [];
     logs = [];
     lastLogSignature = "";
     statusTitle = copy.waitTitle;
@@ -330,6 +335,7 @@
       <ProgressStats {statusTitle} {statusMessage} {currentFile} {progress} {statusKind} {copy} />
       <LogList {logs} {copy} />
       <FailureList {failures} {copy} />
+      <WarningList {warnings} {copy} />
     </div>
   {/if}
 

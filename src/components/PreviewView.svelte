@@ -590,6 +590,7 @@
     <div class="preview-sidebar-head">
       <h2>{copy.previewTitle}</h2>
     </div>
+    <div class="preview-state">{copy.previewPdfUnsupported}</div>
 
     <div bind:this={treeViewport} class="preview-tree" aria-label={copy.previewTreeLabel} onscroll={handleTreeScroll}>
       {#if treeLoading}

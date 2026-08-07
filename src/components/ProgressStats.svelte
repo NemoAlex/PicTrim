@@ -42,6 +42,8 @@
   const savedPct = $derived(src > 0 ? Math.round(((src - dst) / src) * 100) : 0);
 
   const images = $derived(progress?.images ?? 0);
+  const pdfs = $derived(progress?.pdfs ?? 0);
+  const embeddedImages = $derived(progress?.embeddedImages ?? 0);
   const copied = $derived(progress?.copied ?? 0);
   const skipped = $derived(progress?.skipped ?? 0);
   const failed = $derived(progress?.failed ?? 0);
@@ -92,6 +94,16 @@
       <span class="m-label">{copy.generatedImages}</span>
       <b>{images}</b>
     </span>
+    {#if pdfs > 0}
+      <span class="metric">
+        <span class="m-label">{copy.processedPdfs}</span>
+        <b>{pdfs}</b>
+      </span>
+      <span class="metric">
+        <span class="m-label">{copy.embeddedImages}</span>
+        <b>{embeddedImages}</b>
+      </span>
+    {/if}
     {#if copied > 0}
       <span class="metric">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

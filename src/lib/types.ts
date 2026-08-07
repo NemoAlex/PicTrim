@@ -34,6 +34,8 @@ export interface BatchProgress {
   discovered: number;
   processed: number;
   images: number;
+  pdfs: number;
+  embeddedImages: number;
   copied: number;
   skipped: number;
   failed: number;
@@ -46,6 +48,11 @@ export interface BatchProgress {
 }
 
 export interface FailureEntry {
+  rel: string;
+  message: string;
+}
+
+export interface WarningEntry {
   rel: string;
   message: string;
 }
