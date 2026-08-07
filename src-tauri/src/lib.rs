@@ -1,7 +1,10 @@
+mod pdf;
+
 use base64::{engine::general_purpose, Engine as _};
 use rayon::ThreadPoolBuilder;
 use rs_vips::{
     bindings,
+    enums::{BandFormat, Interpretation},
     voption::{call, call_option_string, Setter, VOption},
     Vips, VipsImage,
 };
@@ -23,6 +26,7 @@ const IMAGE_EXTS: &[&str] = &[
 ];
 const PROGRESS_INTERVAL_MS: u64 = 100;
 const PREVIEW_MAX_SIDE: i32 = 1600;
+const PDF_IMAGE_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static VIPS_INIT: OnceLock<bool> = OnceLock::new();
 
@@ -157,7 +161,14 @@ struct WorkItem {
     src: PathBuf,
     rel: PathBuf,
     dst: PathBuf,
-    is_image: bool,
+    kind: WorkKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkKind {
+    RasterImage,
+    Pdf,
+    Other,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -217,6 +228,8 @@ struct BatchProgress {
     discovered: usize,
     processed: usize,
     images: usize,
+    pdfs: usize,
+    embedded_images: usize,
     copied: usize,
     skipped: usize,
     failed: usize,
@@ -235,16 +248,26 @@ struct FailureEntry {
     message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WarningEntry {
+    rel: String,
+    message: String,
+}
+
 #[derive(Default)]
 struct Counters {
     processed: AtomicUsize,
     images: AtomicUsize,
+    pdfs: AtomicUsize,
+    embedded_images: AtomicUsize,
     copied: AtomicUsize,
     skipped: AtomicUsize,
     failed: AtomicUsize,
     total_src_bytes: AtomicU64,
     total_dst_bytes: AtomicU64,
     failures: Mutex<Vec<FailureEntry>>,
+    warnings: Mutex<Vec<WarningEntry>>,
 }
 
 impl Counters {
@@ -262,6 +285,8 @@ impl Counters {
             discovered,
             processed: self.processed.load(Ordering::Relaxed),
             images: self.images.load(Ordering::Relaxed),
+            pdfs: self.pdfs.load(Ordering::Relaxed),
+            embedded_images: self.embedded_images.load(Ordering::Relaxed),
             copied: self.copied.load(Ordering::Relaxed),
             skipped: self.skipped.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
@@ -370,7 +395,9 @@ fn load_preview_directory_blocking(
     let limit = limit.clamp(1, 500);
 
     match dir_path {
-        Some(dir_path) => load_preview_directory_children(&settings, PathBuf::from(dir_path), offset, limit),
+        Some(dir_path) => {
+            load_preview_directory_children(&settings, PathBuf::from(dir_path), offset, limit)
+        }
         None => load_preview_root_directory(&settings, offset, limit),
     }
 }
@@ -895,7 +922,7 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
                     if cancelled.load(Ordering::Relaxed) {
                         return;
                     }
-                    let result = process_item(&item, &settings);
+                    let result = process_item(&item, &settings, &cancelled);
                     apply_result(&counters, &item, result);
 
                     let elapsed = start.elapsed().as_millis() as u64;
@@ -947,6 +974,12 @@ fn run_batch(app: AppHandle, settings: BatchSettings, cancel: Arc<AtomicBool>) -
         .map(|failures| failures.clone())
         .unwrap_or_default();
     let _ = app_done.emit("batch-failures", failures);
+    let warnings = counters_done
+        .warnings
+        .lock()
+        .map(|warnings| warnings.clone())
+        .unwrap_or_default();
+    let _ = app_done.emit("batch-warnings", warnings);
 
     is_cancelled
 }
@@ -1013,20 +1046,27 @@ fn send_file_source(
     if is_temp_output_name(src.file_name().unwrap_or_else(|| OsStr::new(""))) {
         return true;
     }
-    let is_image = is_supported_image(src);
-    if !is_image && !settings.copy_non_images {
+    let kind = if is_supported_image(src) {
+        WorkKind::RasterImage
+    } else if is_pdf(src) {
+        WorkKind::Pdf
+    } else {
+        WorkKind::Other
+    };
+    if kind == WorkKind::Other && !settings.copy_non_images {
         return true;
     }
-    let dst = if is_image {
-        output_path(output_dir, &rel, settings.output_format)
-    } else {
-        output_dir.join(&rel)
+    let dst = match kind {
+        WorkKind::RasterImage => output_path(output_dir, &rel, settings.output_format),
+        WorkKind::Pdf if settings.output_format == OutputFormat::Keep => output_dir.join(&rel),
+        WorkKind::Pdf => pdf_output_dir(output_dir, &rel),
+        WorkKind::Other => output_dir.join(&rel),
     };
     tx.send(WorkItem {
         src: src.to_path_buf(),
         rel,
         dst,
-        is_image,
+        kind,
     })
     .is_ok()
 }
@@ -1138,7 +1178,7 @@ fn push_preview_file_source(
         dst: output_path(output_dir, &rel, settings.output_format),
         src: src.to_path_buf(),
         rel,
-        is_image: true,
+        kind: WorkKind::RasterImage,
     });
 }
 
@@ -1154,7 +1194,10 @@ fn preview_work_item_for_path(
     {
         return Ok(None);
     }
-    if src.components().any(|part| is_hidden_name(part.as_os_str())) {
+    if src
+        .components()
+        .any(|part| is_hidden_name(part.as_os_str()))
+    {
         return Ok(None);
     }
 
@@ -1167,7 +1210,7 @@ fn preview_work_item_for_path(
         dst: output_path(&output_dir, &rel, settings.output_format),
         src: src.to_path_buf(),
         rel,
-        is_image: true,
+        kind: WorkKind::RasterImage,
     }))
 }
 
@@ -1212,9 +1255,10 @@ fn preview_rel_for_path(settings: &BatchSettings, path: &Path) -> Result<PathBuf
 }
 
 fn directory_in_preview_sources(settings: &BatchSettings, dir: &Path) -> Result<bool, String> {
-    Ok(input_sources(settings)?
-        .into_iter()
-        .any(|source| source.kind == SourcePathKind::Directory && (dir == source.path || dir.starts_with(&source.path))))
+    Ok(input_sources(settings)?.into_iter().any(|source| {
+        source.kind == SourcePathKind::Directory
+            && (dir == source.path || dir.starts_with(&source.path))
+    }))
 }
 
 fn preview_entry_from_work_item(item: WorkItem) -> PreviewDirectoryEntry {
@@ -1233,13 +1277,26 @@ fn preview_entry_from_work_item(item: WorkItem) -> PreviewDirectoryEntry {
 
 #[derive(Debug)]
 enum ItemResult {
-    Image { src_bytes: u64, dst_bytes: u64 },
-    Copied { src_bytes: u64, dst_bytes: u64 },
+    Image {
+        src_bytes: u64,
+        dst_bytes: u64,
+    },
+    Pdf {
+        src_bytes: u64,
+        dst_bytes: u64,
+        embedded_images: usize,
+        warnings: Vec<String>,
+    },
+    Copied {
+        src_bytes: u64,
+        dst_bytes: u64,
+    },
     Skipped,
+    Cancelled,
     Failed(String),
 }
 
-fn process_item(item: &WorkItem, settings: &BatchSettings) -> ItemResult {
+fn process_item(item: &WorkItem, settings: &BatchSettings, cancel: &AtomicBool) -> ItemResult {
     let dst = &item.dst;
 
     if settings.skip_existing && dst.exists() {
@@ -1252,27 +1309,587 @@ fn process_item(item: &WorkItem, settings: &BatchSettings) -> ItemResult {
         }
     }
 
-    if item.is_image {
-        match resize_image(&item.src, dst, settings) {
+    match item.kind {
+        WorkKind::RasterImage => match resize_image(&item.src, dst, settings) {
             Ok((src_bytes, dst_bytes)) => ItemResult::Image {
                 src_bytes,
                 dst_bytes,
             },
             Err(err) => ItemResult::Failed(err),
-        }
-    } else {
-        if same_file_path(&item.src, dst) {
-            return ItemResult::Skipped;
-        }
-        match fs::copy(&item.src, dst) {
-            Ok(dst_bytes) => {
-                let src_bytes = file_size(&item.src);
-                ItemResult::Copied {
-                    src_bytes,
-                    dst_bytes,
-                }
+        },
+        WorkKind::Pdf => match process_pdf(&item.src, dst, settings, cancel) {
+            Ok(result) => ItemResult::Pdf {
+                src_bytes: result.src_bytes,
+                dst_bytes: result.dst_bytes,
+                embedded_images: result.embedded_images,
+                warnings: result.warnings,
+            },
+            Err(_) if cancel.load(Ordering::Relaxed) => ItemResult::Cancelled,
+            Err(err) => ItemResult::Failed(err),
+        },
+        WorkKind::Other => {
+            if same_file_path(&item.src, dst) {
+                return ItemResult::Skipped;
             }
-            Err(err) => ItemResult::Failed(err.to_string()),
+            match fs::copy(&item.src, dst) {
+                Ok(dst_bytes) => {
+                    let src_bytes = file_size(&item.src);
+                    ItemResult::Copied {
+                        src_bytes,
+                        dst_bytes,
+                    }
+                }
+                Err(err) => ItemResult::Failed(err.to_string()),
+            }
+        }
+    }
+}
+
+struct PdfProcessResult {
+    src_bytes: u64,
+    dst_bytes: u64,
+    embedded_images: usize,
+    warnings: Vec<String>,
+}
+
+fn process_pdf(
+    src: &Path,
+    dst: &Path,
+    settings: &BatchSettings,
+    cancel: &AtomicBool,
+) -> Result<PdfProcessResult, String> {
+    let src_bytes = file_size(src);
+    let mut document = pdf::Document::open(src).map_err(|err| format!("打开 PDF 失败: {err}"))?;
+    let _input_was_encrypted = document.is_encrypted();
+    let infos = document.images()?;
+    let mut warnings = Vec::new();
+    if document.has_signatures() {
+        warnings.push("PDF 包含数字签名；处理后签名字段会保留，但原签名将失效".to_string());
+    }
+
+    if settings.output_format == OutputFormat::Keep {
+        for info in &infos {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("任务已取消".to_string());
+            }
+            replace_pdf_image(&mut document, info, settings)?;
+        }
+        let temp = temp_output_path(dst);
+        if let Err(err) = document.save(&temp) {
+            let _ = fs::remove_file(&temp);
+            return Err(format!("保存 PDF 失败: {err}"));
+        }
+        if let Err(err) = pdf::check(&temp) {
+            let _ = fs::remove_file(&temp);
+            return Err(format!("PDF 结构校验失败: {err}"));
+        }
+        replace_file(&temp, dst).map_err(|err| {
+            let _ = fs::remove_file(&temp);
+            format!("发布 PDF 失败: {err}")
+        })?;
+        Ok(PdfProcessResult {
+            src_bytes,
+            dst_bytes: file_size(dst),
+            embedded_images: infos.len(),
+            warnings,
+        })
+    } else {
+        let temp_dir = temp_output_path(dst);
+        fs::create_dir_all(&temp_dir).map_err(|err| format!("创建 PDF 暂存目录失败: {err}"))?;
+        let result = extract_pdf_images(&mut document, &infos, &temp_dir, settings, cancel);
+        let dst_bytes = match result {
+            Ok(dst_bytes) => {
+                if let Err(err) = replace_directory(&temp_dir, dst) {
+                    let _ = fs::remove_dir_all(&temp_dir);
+                    return Err(format!("发布 PDF 图片目录失败: {err}"));
+                }
+                dst_bytes
+            }
+            Err(err) => {
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(err);
+            }
+        };
+        Ok(PdfProcessResult {
+            src_bytes,
+            dst_bytes,
+            embedded_images: infos.len(),
+            warnings,
+        })
+    }
+}
+
+fn replace_pdf_image(
+    document: &mut pdf::Document,
+    info: &pdf::ImageInfo,
+    settings: &BatchSettings,
+) -> Result<(), String> {
+    let image = process_pdf_vips_image(load_pdf_vips_image(document, info)?, settings)?;
+    let width = image.get_width() as u32;
+    let height = image.get_height() as u32;
+    let components = image.get_bands() as u32;
+    let color_space = match components {
+        1 => pdf::COLOR_GRAY,
+        3 => pdf::COLOR_RGB,
+        4 => pdf::COLOR_CMYK,
+        _ => return Err(format!("不支持的 PDF 输出通道数: {components}")),
+    };
+    let encoded = image
+        .write_to_buffer(&format!(".jpg[Q={},strip,interlace]", settings.quality))
+        .map_err(|err| format!("编码 PDF 内嵌图片失败: {err} {}", vips_error_detail()))?;
+    document.replace_image(
+        info,
+        pdf::Replacement {
+            data: &encoded,
+            width,
+            height,
+            components,
+            color_space,
+            filter: pdf::FILTER_DCT,
+        },
+    )?;
+
+    if info.smask_object_id > 0 {
+        replace_pdf_mask(
+            document,
+            info.smask_object_id,
+            info.smask_generation,
+            settings,
+        )?;
+    }
+    if info.mask_object_id > 0 {
+        replace_pdf_mask(
+            document,
+            info.mask_object_id,
+            info.mask_generation,
+            settings,
+        )?;
+    }
+    Ok(())
+}
+
+fn replace_pdf_mask(
+    document: &mut pdf::Document,
+    object_id: i32,
+    generation: i32,
+    settings: &BatchSettings,
+) -> Result<(), String> {
+    let info = document.object_info(object_id, generation)?;
+    let image = process_pdf_vips_image(load_pdf_vips_image(document, &info)?, settings)?;
+    if image.get_bands() != 1 {
+        return Err("PDF 透明蒙版不是单通道图片".to_string());
+    }
+    let width = image.get_width() as u32;
+    let height = image.get_height() as u32;
+    let raw = image.write_to_memory();
+    checked_pdf_image_size(width, height, 1, 8)?;
+    document.replace_image(
+        &info,
+        pdf::Replacement {
+            data: &raw,
+            width,
+            height,
+            components: 1,
+            color_space: pdf::COLOR_GRAY,
+            filter: pdf::FILTER_FLATE,
+        },
+    )
+}
+
+fn extract_pdf_images(
+    document: &mut pdf::Document,
+    infos: &[pdf::ImageInfo],
+    temp_dir: &Path,
+    settings: &BatchSettings,
+    cancel: &AtomicBool,
+) -> Result<u64, String> {
+    let mut page_counts = HashMap::<u32, usize>::new();
+    let mut total_bytes = 0u64;
+    for info in infos {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("任务已取消".to_string());
+        }
+        let mut image = process_pdf_vips_image(load_pdf_vips_image(document, info)?, settings)?;
+        let mask_ref = if info.smask_object_id > 0 {
+            Some((info.smask_object_id, info.smask_generation))
+        } else if info.mask_object_id > 0 {
+            Some((info.mask_object_id, info.mask_generation))
+        } else {
+            None
+        };
+        if let Some((object_id, generation)) = mask_ref {
+            let mask_info = document.object_info(object_id, generation)?;
+            let mask =
+                process_pdf_vips_image(load_pdf_vips_image(document, &mask_info)?, settings)?;
+            if mask.get_width() != image.get_width() || mask.get_height() != image.get_height() {
+                return Err("PDF 主图与透明蒙版处理后的尺寸不一致".to_string());
+            }
+            image = VipsImage::bandjoin(&[image, mask])
+                .map_err(|err| format!("合并 PDF 透明通道失败: {err} {}", vips_error_detail()))?;
+        }
+        let page_index = page_counts.entry(info.first_page).or_default();
+        *page_index += 1;
+        let ext = output_format_extension(settings.output_format);
+        let filename = format!("page-{:04}-image-{:04}.{ext}", info.first_page, *page_index);
+        let path = temp_dir.join(filename);
+        let image = prepare_for_output(image, settings.output_format)?;
+        let save_path = save_path_with_options(&path, settings.output_format, settings.quality);
+        image
+            .write_to_file(&save_path)
+            .map_err(|err| format!("写入 PDF 内嵌图片失败: {err} {}", vips_error_detail()))?;
+        total_bytes = total_bytes.saturating_add(file_size(&path));
+    }
+    Ok(total_bytes)
+}
+
+fn load_pdf_vips_image(
+    document: &mut pdf::Document,
+    info: &pdf::ImageInfo,
+) -> Result<VipsImage, String> {
+    validate_pdf_image_info(info)?;
+    if matches!(info.filter, pdf::FILTER_DCT | pdf::FILTER_JPX) {
+        if info.bits_per_component != 8 {
+            return Err(format!("暂不支持 {}-bit PDF 图片", info.bits_per_component));
+        }
+        let memory_components = if info.color_space == pdf::COLOR_INDEXED {
+            4
+        } else {
+            info.components.max(1)
+        };
+        checked_pdf_image_size(info.width, info.height, memory_components, 8)?;
+        let encoded = document.read_raw(info)?;
+        if encoded.len() > PDF_IMAGE_MEMORY_LIMIT {
+            return Err("PDF 内嵌图片编码数据超过 512 MiB".to_string());
+        }
+        let image = VipsImage::new_from_buffer(&encoded, "")
+            .map_err(|err| format!("解码 PDF 内嵌图片失败: {err} {}", vips_error_detail()))?;
+        checked_pdf_image_size(
+            image.get_width() as u32,
+            image.get_height() as u32,
+            image.get_bands() as u32,
+            8,
+        )?;
+        if image.get_width() as u32 != info.width || image.get_height() as u32 != info.height {
+            return Err("PDF 图片字典尺寸与编码数据不一致".to_string());
+        }
+        let image = set_pdf_interpretation(image, info)?;
+        let image = apply_pdf_decode(image, info)?;
+        return apply_pdf_icc(document, info, image);
+    }
+
+    let decoded = document.read_decoded(info)?;
+    let (pixels, components, interpretation) = if info.color_space == pdf::COLOR_INDEXED {
+        if info.bits_per_component != 8 {
+            return Err("暂不支持非 8-bit Indexed PDF 图片".to_string());
+        }
+        let base_components = match info.indexed_base_color_space {
+            pdf::COLOR_GRAY => 1,
+            pdf::COLOR_RGB => 3,
+            pdf::COLOR_CMYK => 4,
+            _ => return Err("不支持的 Indexed PDF 基础色彩空间".to_string()),
+        };
+        checked_pdf_image_size(info.width, info.height, 1, 8)?;
+        let palette = document.read_palette(info)?;
+        let required_palette = (info.indexed_high_value as usize + 1)
+            .checked_mul(base_components)
+            .ok_or_else(|| "PDF Indexed 调色板尺寸溢出".to_string())?;
+        if palette.len() < required_palette {
+            return Err("PDF Indexed 调色板数据不足".to_string());
+        }
+        let pixel_count = (info.width as usize)
+            .checked_mul(info.height as usize)
+            .ok_or_else(|| "PDF 图片尺寸溢出".to_string())?;
+        let decoded = normalize_pdf_decoded_length(decoded, pixel_count)?;
+        if decoded.len() != pixel_count {
+            return Err("PDF Indexed 解码数据长度不匹配".to_string());
+        }
+        let output_len = pixel_count
+            .checked_mul(base_components)
+            .ok_or_else(|| "PDF 图片尺寸溢出".to_string())?;
+        if output_len > PDF_IMAGE_MEMORY_LIMIT {
+            return Err("PDF 图片解码内存超过 512 MiB".to_string());
+        }
+        let mut pixels = Vec::with_capacity(output_len);
+        for index in decoded {
+            let index = if info.decode_mode == 1 {
+                info.indexed_high_value.saturating_sub(index as u32) as usize
+            } else {
+                index as usize
+            };
+            if index > info.indexed_high_value as usize {
+                return Err("PDF Indexed 图片包含越界索引".to_string());
+            }
+            let offset = index * base_components;
+            pixels.extend_from_slice(&palette[offset..offset + base_components]);
+        }
+        (
+            pixels,
+            base_components as i32,
+            interpretation_for_components(base_components as u32),
+        )
+    } else {
+        let components = info.components;
+        let expected =
+            checked_pdf_image_size(info.width, info.height, components, info.bits_per_component)?;
+        let mut pixels = if info.bits_per_component == 8 {
+            normalize_pdf_decoded_length(decoded, expected)?
+        } else if info.image_mask != 0 && matches!(info.bits_per_component, 1 | 2 | 4) {
+            unpack_pdf_samples(&decoded, info.width, info.height, info.bits_per_component)?
+        } else {
+            return Err(format!("暂不支持 {}-bit PDF 图片", info.bits_per_component));
+        };
+        if info.decode_mode == 1 {
+            for sample in &mut pixels {
+                *sample = 255 - *sample;
+            }
+        }
+        (
+            pixels,
+            components as i32,
+            interpretation_for_components(components),
+        )
+    };
+    let image = VipsImage::new_from_memory_copy(
+        &pixels,
+        info.width as i32,
+        info.height as i32,
+        components,
+        BandFormat::Uchar,
+    )
+    .map_err(|err| format!("载入 PDF 像素数据失败: {err} {}", vips_error_detail()))?;
+    let image = image
+        .copy_with_opts(VOption::new().set("interpretation", interpretation as i32))
+        .map_err(|err| format!("设置 PDF 色彩空间失败: {err} {}", vips_error_detail()))?;
+    apply_pdf_icc(document, info, image)
+}
+
+fn normalize_pdf_decoded_length(mut data: Vec<u8>, expected: usize) -> Result<Vec<u8>, String> {
+    if data.len() == expected {
+        return Ok(data);
+    }
+    if data.len() > expected
+        && data.len() - expected <= 2
+        && data[expected..].iter().all(u8::is_ascii_whitespace)
+    {
+        data.truncate(expected);
+        return Ok(data);
+    }
+    Err(format!(
+        "PDF 图片解码数据长度不匹配: 期望 {expected}，实际 {}",
+        data.len()
+    ))
+}
+
+fn apply_pdf_icc(
+    document: &mut pdf::Document,
+    info: &pdf::ImageInfo,
+    mut image: VipsImage,
+) -> Result<VipsImage, String> {
+    if info.color_space != pdf::COLOR_ICC {
+        return Ok(image);
+    }
+    let profile = document.read_icc_profile(info)?;
+    image
+        .set_blob_copy("icc-profile-data", &profile)
+        .map_err(|err| format!("附加 PDF ICC 配置失败: {err}"))?;
+    image
+        .icc_transform_with_opts("srgb", VOption::new().set("embedded", true))
+        .map_err(|err| format!("转换 PDF ICC 色彩失败: {err} {}", vips_error_detail()))
+}
+
+fn validate_pdf_image_info(info: &pdf::ImageInfo) -> Result<(), String> {
+    if info.width == 0 || info.height == 0 {
+        return Err("PDF 图片尺寸无效".to_string());
+    }
+    if !matches!(
+        info.filter,
+        pdf::FILTER_DCT | pdf::FILTER_JPX | pdf::FILTER_FLATE | pdf::FILTER_LZW
+    ) {
+        return Err("不支持的 PDF 图片编码（仅支持 JPEG/JPX/Flate/LZW）".to_string());
+    }
+    if !matches!(
+        info.color_space,
+        pdf::COLOR_GRAY | pdf::COLOR_RGB | pdf::COLOR_CMYK | pdf::COLOR_INDEXED | pdf::COLOR_ICC
+    ) && info.image_mask == 0
+    {
+        return Err("不支持的 PDF 图片色彩空间".to_string());
+    }
+    if info.has_color_key_mask != 0 {
+        return Err("暂不支持 PDF 颜色键 Mask".to_string());
+    }
+    if info.decode_mode == 2 {
+        return Err("暂不支持 PDF 图片的非标准 Decode 数组".to_string());
+    }
+    Ok(())
+}
+
+fn apply_pdf_decode(image: VipsImage, info: &pdf::ImageInfo) -> Result<VipsImage, String> {
+    if info.decode_mode != 1 {
+        return Ok(image);
+    }
+    image
+        .linear(&[-1.0], &[255.0])
+        .map_err(|err| format!("应用 PDF Decode 数组失败: {err} {}", vips_error_detail()))
+}
+
+fn checked_pdf_image_size(
+    width: u32,
+    height: u32,
+    components: u32,
+    bits_per_component: u32,
+) -> Result<usize, String> {
+    if width == 0 || height == 0 || components == 0 || bits_per_component == 0 {
+        return Err("PDF 图片参数无效".to_string());
+    }
+    let bits = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|value| value.checked_mul(components as usize))
+        .and_then(|value| value.checked_mul(bits_per_component as usize))
+        .ok_or_else(|| "PDF 图片尺寸乘法溢出".to_string())?;
+    let bytes = bits
+        .checked_add(7)
+        .ok_or_else(|| "PDF 图片尺寸乘法溢出".to_string())?
+        / 8;
+    let decoded_bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|value| value.checked_mul(components as usize))
+        .ok_or_else(|| "PDF 图片尺寸乘法溢出".to_string())?;
+    if bytes > PDF_IMAGE_MEMORY_LIMIT || decoded_bytes > PDF_IMAGE_MEMORY_LIMIT {
+        return Err("PDF 图片解码内存超过 512 MiB".to_string());
+    }
+    Ok(if bits_per_component == 8 {
+        decoded_bytes
+    } else {
+        bytes
+    })
+}
+
+fn unpack_pdf_samples(
+    input: &[u8],
+    width: u32,
+    height: u32,
+    bits_per_component: u32,
+) -> Result<Vec<u8>, String> {
+    let packed_row = (width as usize * bits_per_component as usize).div_ceil(8);
+    let expected = packed_row
+        .checked_mul(height as usize)
+        .ok_or_else(|| "PDF 蒙版尺寸溢出".to_string())?;
+    if input.len() != expected {
+        return Err("PDF 蒙版解码数据长度不匹配".to_string());
+    }
+    let max_value = (1u16 << bits_per_component) - 1;
+    let mut output = Vec::with_capacity(width as usize * height as usize);
+    for row in input.chunks_exact(packed_row) {
+        let mut bit_offset = 0usize;
+        for _ in 0..width {
+            let byte = row[bit_offset / 8];
+            let shift = 8 - bits_per_component as usize - (bit_offset % 8);
+            let value = ((byte >> shift) & max_value as u8) as u16;
+            output.push(((value * 255) / max_value) as u8);
+            bit_offset += bits_per_component as usize;
+        }
+    }
+    Ok(output)
+}
+
+fn set_pdf_interpretation(image: VipsImage, info: &pdf::ImageInfo) -> Result<VipsImage, String> {
+    let interpretation = if info.color_space == pdf::COLOR_ICC {
+        interpretation_for_components(info.components)
+    } else {
+        match info.color_space {
+            pdf::COLOR_GRAY => Interpretation::BW,
+            pdf::COLOR_RGB | pdf::COLOR_INDEXED => Interpretation::Srgb,
+            pdf::COLOR_CMYK => Interpretation::Cmyk,
+            _ => return Err("不支持的 PDF 图片色彩空间".to_string()),
+        }
+    };
+    image
+        .copy_with_opts(VOption::new().set("interpretation", interpretation as i32))
+        .map_err(|err| format!("设置 PDF 色彩空间失败: {err} {}", vips_error_detail()))
+}
+
+fn interpretation_for_components(components: u32) -> Interpretation {
+    match components {
+        1 => Interpretation::BW,
+        4 => Interpretation::Cmyk,
+        _ => Interpretation::Srgb,
+    }
+}
+
+fn process_pdf_vips_image(
+    mut image: VipsImage,
+    settings: &BatchSettings,
+) -> Result<VipsImage, String> {
+    image = rotate_image(image, settings.rotation)?;
+    let src_width = image.get_width().max(1) as f64;
+    let src_height = image.get_height().max(1) as f64;
+    let scale = match settings.resize_mode {
+        ResizeMode::FitLongestSide => settings.max_side as f64 / src_width.max(src_height),
+        ResizeMode::FitBox => {
+            (settings.width as f64 / src_width).min(settings.height as f64 / src_height)
+        }
+        ResizeMode::FitWidth => settings.width as f64 / src_width,
+        ResizeMode::FitHeight => settings.height as f64 / src_height,
+        ResizeMode::FixedCrop => {
+            (settings.width as f64 / src_width).max(settings.height as f64 / src_height) + 0.000001
+        }
+    };
+    let scale = if settings.resize_mode == ResizeMode::FixedCrop || settings.allow_upscale {
+        scale
+    } else {
+        scale.min(1.0)
+    };
+    let projected_width = (src_width * scale).ceil().max(1.0) as u32;
+    let projected_height = (src_height * scale).ceil().max(1.0) as u32;
+    checked_pdf_image_size(
+        projected_width,
+        projected_height,
+        image.get_bands() as u32,
+        8,
+    )?;
+    if (scale - 1.0).abs() > f64::EPSILON {
+        image = image
+            .resize(scale)
+            .map_err(|err| format!("缩放 PDF 图片失败: {err} {}", vips_error_detail()))?;
+    }
+    if settings.resize_mode == ResizeMode::FixedCrop {
+        image = crop_to_target(image, settings)?;
+    }
+    Ok(image)
+}
+
+fn output_format_extension(format: OutputFormat) -> &'static str {
+    match format {
+        OutputFormat::Jpg => "jpg",
+        OutputFormat::Png => "png",
+        OutputFormat::Webp => "webp",
+        OutputFormat::Keep => "pdf",
+    }
+}
+
+fn pdf_output_dir(output_dir: &Path, rel: &Path) -> PathBuf {
+    let parent = rel.parent().unwrap_or_else(|| Path::new(""));
+    let stem = rel
+        .file_stem()
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| OsStr::new("pdf"));
+    output_dir.join(parent).join(stem)
+}
+
+fn replace_directory(temp: &Path, dst: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        return fs::rename(temp, dst);
+    }
+    let backup = temp_output_path(&dst.with_extension("pictrim-backup"));
+    fs::rename(dst, &backup)?;
+    match fs::rename(temp, dst) {
+        Ok(()) => {
+            let _ = fs::remove_dir_all(backup);
+            Ok(())
+        }
+        Err(err) => {
+            let _ = fs::rename(&backup, dst);
+            Err(err)
         }
     }
 }
@@ -1566,6 +2183,31 @@ fn apply_result(counters: &Counters, item: &WorkItem, result: ItemResult) {
                 .total_dst_bytes
                 .fetch_add(dst_bytes, Ordering::Relaxed);
         }
+        ItemResult::Pdf {
+            src_bytes,
+            dst_bytes,
+            embedded_images,
+            warnings,
+        } => {
+            counters.pdfs.fetch_add(1, Ordering::Relaxed);
+            counters
+                .embedded_images
+                .fetch_add(embedded_images, Ordering::Relaxed);
+            counters
+                .total_src_bytes
+                .fetch_add(src_bytes, Ordering::Relaxed);
+            counters
+                .total_dst_bytes
+                .fetch_add(dst_bytes, Ordering::Relaxed);
+            if let Ok(mut entries) = counters.warnings.lock() {
+                for message in warnings {
+                    entries.push(WarningEntry {
+                        rel: item.rel.to_string_lossy().to_string(),
+                        message,
+                    });
+                }
+            }
+        }
         ItemResult::Copied {
             src_bytes,
             dst_bytes,
@@ -1581,6 +2223,7 @@ fn apply_result(counters: &Counters, item: &WorkItem, result: ItemResult) {
         ItemResult::Skipped => {
             counters.skipped.fetch_add(1, Ordering::Relaxed);
         }
+        ItemResult::Cancelled => {}
         ItemResult::Failed(message) => {
             counters.failed.fetch_add(1, Ordering::Relaxed);
             if let Ok(mut failures) = counters.failures.lock() {
@@ -1632,8 +2275,18 @@ fn replace_file(temp: &Path, dst: &Path) -> std::io::Result<()> {
         Ok(()) => Ok(()),
         Err(first_err) => {
             if dst.exists() {
-                fs::remove_file(dst)?;
-                fs::rename(temp, dst)
+                let backup = temp_output_path(&dst.with_extension("pictrim-backup"));
+                fs::rename(dst, &backup)?;
+                match fs::rename(temp, dst) {
+                    Ok(()) => {
+                        let _ = fs::remove_file(backup);
+                        Ok(())
+                    }
+                    Err(err) => {
+                        let _ = fs::rename(&backup, dst);
+                        Err(err)
+                    }
+                }
             } else {
                 Err(first_err)
             }
@@ -1727,6 +2380,12 @@ fn is_supported_image(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+}
+
 fn is_hidden_name(name: &OsStr) -> bool {
     name.to_string_lossy().starts_with('.')
 }
@@ -1762,6 +2421,8 @@ impl BatchProgress {
             discovered: 0,
             processed: 0,
             images: 0,
+            pdfs: 0,
+            embedded_images: 0,
             copied: 0,
             skipped: 0,
             failed: 0,
@@ -1804,6 +2465,7 @@ mod tests {
         assert!(is_supported_image(Path::new("a.JPG")));
         assert!(is_supported_image(Path::new("a.webp")));
         assert!(!is_supported_image(Path::new("a.txt")));
+        assert!(is_pdf(Path::new("a.PDF")));
     }
 
     #[test]
@@ -2133,6 +2795,369 @@ mod tests {
         );
     }
 
+    #[test]
+    fn qpdf_binding_enumerates_unique_page_image() {
+        let dir = temp_test_dir("pdf-enumerate");
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("source.pdf");
+        write_test_pdf(&src, "/FlateDecode", true);
+
+        let mut document = pdf::Document::open(&src).unwrap();
+        let images = document.images().unwrap();
+        assert_eq!(images.len(), 1, "the same object is referenced twice");
+        assert_eq!(images[0].first_page, 1);
+        assert_eq!((images[0].width, images[0].height), (2, 2));
+        assert_eq!(images[0].filter, pdf::FILTER_FLATE);
+        assert!(!document.is_encrypted());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pdf_keep_rewrites_images_and_preserves_container() {
+        let _guard = VIPS_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let _ = ensure_vips();
+        let dir = temp_test_dir("pdf-keep");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let src = dir.join("source.pdf");
+        let dst = output.join("source.pdf");
+        write_test_pdf(&src, "/FlateDecode", false);
+        let settings = test_settings(vec![src.to_string_lossy().to_string()], &output);
+
+        let result = process_pdf(&src, &dst, &settings, &AtomicBool::new(false)).unwrap();
+        assert_eq!(result.embedded_images, 1);
+        assert!(dst.is_file());
+        pdf::check(&dst).unwrap();
+        let mut output_document = pdf::Document::open(&dst).unwrap();
+        let images = output_document.images().unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].filter, pdf::FILTER_DCT);
+        let old_stream = [
+            120, 156, 251, 207, 192, 192, 240, 31, 132, 255, 255, 103, 0, 0, 28, 239, 4, 252,
+        ];
+        assert!(!fs::read(&dst)
+            .unwrap()
+            .windows(old_stream.len())
+            .any(|window| window == old_stream));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pdf_extract_uses_page_and_image_names() {
+        let _guard = VIPS_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let _ = ensure_vips();
+        let dir = temp_test_dir("pdf-extract");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let src = dir.join("source.pdf");
+        let dst = output.join("source");
+        write_test_pdf(&src, "/FlateDecode", true);
+        let mut settings = test_settings(vec![src.to_string_lossy().to_string()], &output);
+        settings.output_format = OutputFormat::Png;
+
+        let result = process_pdf(&src, &dst, &settings, &AtomicBool::new(false)).unwrap();
+        assert_eq!(result.embedded_images, 1);
+        assert!(dst.join("page-0001-image-0001.png").is_file());
+        assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsupported_pdf_image_leaves_no_formal_output() {
+        let _guard = VIPS_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let _ = ensure_vips();
+        let dir = temp_test_dir("pdf-unsupported");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let src = dir.join("source.pdf");
+        let dst = output.join("source.pdf");
+        write_test_pdf(&src, "/CCITTFaxDecode", false);
+        let settings = test_settings(vec![src.to_string_lossy().to_string()], &output);
+
+        let result = process_pdf(&src, &dst, &settings, &AtomicBool::new(false));
+        assert!(result.is_err());
+        assert!(!dst.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fixed_pdf_fixtures_cover_traversal_security_and_common_images() {
+        let _guard = VIPS_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let _ = ensure_vips();
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+
+        for (name, expected) in [
+            ("repeated-reference.pdf", 1),
+            ("nested-form.pdf", 1),
+            ("inline-image.pdf", 1),
+        ] {
+            let mut document = pdf::Document::open(&fixtures.join(name)).unwrap();
+            assert_eq!(document.images().unwrap().len(), expected, "{name}");
+        }
+
+        let signed = pdf::Document::open(&fixtures.join("signed-field.pdf")).unwrap();
+        assert!(signed.has_signatures());
+        let encrypted =
+            pdf::Document::open(&fixtures.join("encrypted-empty-password.pdf")).unwrap();
+        assert!(encrypted.is_encrypted());
+        assert!(pdf::Document::open(&fixtures.join("encrypted-password-required.pdf")).is_err());
+
+        let dir = temp_test_dir("pdf-common-fixtures");
+        fs::create_dir_all(&dir).unwrap();
+        let poppler_available = std::process::Command::new("pdftoppm")
+            .arg("-h")
+            .output()
+            .is_ok();
+        for name in [
+            "rgb-jpeg.pdf",
+            "flate-gray.pdf",
+            "flate-rgb.pdf",
+            "cmyk.pdf",
+            "indexed.pdf",
+            "icc-based.pdf",
+            "smask.pdf",
+            "repeated-reference.pdf",
+            "nested-form.pdf",
+            "inline-image.pdf",
+        ] {
+            let src = fixtures.join(name);
+            let dst = dir.join(name);
+            let settings = test_settings(vec![src.to_string_lossy().to_string()], &dir);
+            process_pdf(&src, &dst, &settings, &AtomicBool::new(false))
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+            pdf::check(&dst).unwrap_or_else(|err| panic!("{name}: {err}"));
+            if poppler_available {
+                let stem = name.trim_end_matches(".pdf");
+                let before_prefix = dir.join(format!("{stem}-before"));
+                let after_prefix = dir.join(format!("{stem}-after"));
+                for (pdf_path, prefix) in [(&src, &before_prefix), (&dst, &after_prefix)] {
+                    assert!(std::process::Command::new("pdftoppm")
+                        .env("XDG_CACHE_HOME", dir.join("font-cache"))
+                        .args(["-png", "-r", "72", "-singlefile"])
+                        .arg(pdf_path)
+                        .arg(prefix)
+                        .status()
+                        .unwrap()
+                        .success());
+                }
+                let before = VipsImage::new_from_file(before_prefix.with_extension("png")).unwrap();
+                let after = VipsImage::new_from_file(after_prefix.with_extension("png")).unwrap();
+                assert_eq!(
+                    (before.get_width(), before.get_height()),
+                    (after.get_width(), after.get_height()),
+                    "{name}"
+                );
+            }
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn poppler_preserves_page_geometry_and_text_positions_when_available() {
+        if std::process::Command::new("pdftoppm")
+            .arg("-h")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let _guard = VIPS_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let _ = ensure_vips();
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let src = fixtures.join("flate-rgb.pdf");
+        let dir = temp_test_dir("pdf-poppler");
+        fs::create_dir_all(&dir).unwrap();
+        let dst = dir.join("output.pdf");
+        let settings = test_settings(vec![src.to_string_lossy().to_string()], &dir);
+        process_pdf(&src, &dst, &settings, &AtomicBool::new(false)).unwrap();
+
+        let before_bbox = dir.join("before.html");
+        let after_bbox = dir.join("after.html");
+        assert!(std::process::Command::new("pdftotext")
+            .env("XDG_CACHE_HOME", dir.join("font-cache"))
+            .args(["-bbox"])
+            .arg(&src)
+            .arg(&before_bbox)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("pdftotext")
+            .env("XDG_CACHE_HOME", dir.join("font-cache"))
+            .args(["-bbox"])
+            .arg(&dst)
+            .arg(&after_bbox)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            fs::read(&before_bbox).unwrap(),
+            fs::read(&after_bbox).unwrap()
+        );
+
+        let before_info = std::process::Command::new("pdfinfo")
+            .arg(&src)
+            .output()
+            .unwrap();
+        let after_info = std::process::Command::new("pdfinfo")
+            .arg(&dst)
+            .output()
+            .unwrap();
+        assert!(before_info.status.success() && after_info.status.success());
+        let geometry = |bytes: &[u8]| {
+            String::from_utf8_lossy(bytes)
+                .lines()
+                .filter(|line| line.starts_with("Pages:") || line.starts_with("Page size:"))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(geometry(&before_info.stdout), geometry(&after_info.stdout));
+
+        for (pdf_path, prefix) in [(&src, "before"), (&dst, "after")] {
+            assert!(std::process::Command::new("pdftoppm")
+                .env("XDG_CACHE_HOME", dir.join("font-cache"))
+                .args(["-png", "-r", "72", "-singlefile"])
+                .arg(pdf_path)
+                .arg(dir.join(prefix))
+                .status()
+                .unwrap()
+                .success());
+        }
+        let before = VipsImage::new_from_file(dir.join("before.png")).unwrap();
+        let after = VipsImage::new_from_file(dir.join("after.png")).unwrap();
+        assert_eq!(
+            (before.get_width(), before.get_height()),
+            (after.get_width(), after.get_height())
+        );
+
+        if let Ok(visual_dir) = std::env::var("PICTRIM_PDF_VISUAL_OUTPUT") {
+            let visual_dir = PathBuf::from(visual_dir);
+            fs::create_dir_all(&visual_dir).unwrap();
+            fs::copy(&src, visual_dir.join("before.pdf")).unwrap();
+            fs::copy(&dst, visual_dir.join("after.pdf")).unwrap();
+            fs::copy(dir.join("before.png"), visual_dir.join("before.png")).unwrap();
+            fs::copy(dir.join("after.png"), visual_dir.join("after.png")).unwrap();
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pdf_failure_cancel_skip_and_overwrite_are_atomic() {
+        let _guard = VIPS_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let _ = ensure_vips();
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let dir = temp_test_dir("pdf-atomic");
+        fs::create_dir_all(&dir).unwrap();
+
+        for name in ["unsupported-jbig2.pdf", "corrupt-stream.pdf"] {
+            let src = fixtures.join(name);
+            let dst = dir.join(format!("{name}.out.pdf"));
+            fs::write(&dst, b"existing-output").unwrap();
+            let settings = test_settings(vec![src.to_string_lossy().to_string()], &dir);
+            assert!(process_pdf(&src, &dst, &settings, &AtomicBool::new(false)).is_err());
+            assert_eq!(fs::read(&dst).unwrap(), b"existing-output");
+        }
+
+        let src = fixtures.join("flate-rgb.pdf");
+        let dst = dir.join("cancelled.pdf");
+        assert!(process_pdf(
+            &src,
+            &dst,
+            &test_settings(vec![src.to_string_lossy().to_string()], &dir),
+            &AtomicBool::new(true)
+        )
+        .is_err());
+        assert!(!dst.exists());
+
+        let existing_dir = dir.join("extract-existing");
+        fs::create_dir_all(&existing_dir).unwrap();
+        let item = WorkItem {
+            src: src.clone(),
+            rel: PathBuf::from("flate-rgb.pdf"),
+            dst: existing_dir,
+            kind: WorkKind::Pdf,
+        };
+        let mut settings = test_settings(vec![src.to_string_lossy().to_string()], &dir);
+        settings.output_format = OutputFormat::Png;
+        assert!(matches!(
+            process_item(&item, &settings, &AtomicBool::new(false)),
+            ItemResult::Skipped
+        ));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signed_and_empty_password_pdf_keep_expected_security_state() {
+        let _guard = VIPS_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let _ = ensure_vips();
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let dir = temp_test_dir("pdf-security");
+        fs::create_dir_all(&dir).unwrap();
+
+        let signed_src = fixtures.join("signed-field.pdf");
+        let signed_dst = dir.join("signed.pdf");
+        let signed_result = process_pdf(
+            &signed_src,
+            &signed_dst,
+            &test_settings(vec![signed_src.to_string_lossy().to_string()], &dir),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(signed_result.warnings.len(), 1);
+        assert!(pdf::Document::open(&signed_dst).unwrap().has_signatures());
+
+        let encrypted_src = fixtures.join("encrypted-empty-password.pdf");
+        let encrypted_dst = dir.join("encrypted.pdf");
+        process_pdf(
+            &encrypted_src,
+            &encrypted_dst,
+            &test_settings(vec![encrypted_src.to_string_lossy().to_string()], &dir),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(pdf::Document::open(&encrypted_dst).unwrap().is_encrypted());
+
+        let locked_src = fixtures.join("encrypted-password-required.pdf");
+        let locked_dst = dir.join("locked.pdf");
+        assert!(process_pdf(
+            &locked_src,
+            &locked_dst,
+            &test_settings(vec![locked_src.to_string_lossy().to_string()], &dir),
+            &AtomicBool::new(false),
+        )
+        .is_err());
+        assert!(!locked_dst.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     const ONE_BY_ONE_PNG: &[u8] = &[
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4,
         0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3,
@@ -2145,6 +3170,59 @@ mod tests {
             std::process::id(),
             TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    fn write_test_pdf(path: &Path, filter: &str, duplicate_draw: bool) {
+        let image_data = [
+            120, 156, 251, 207, 192, 192, 240, 31, 132, 255, 255, 103, 0, 0, 28, 239, 4, 252,
+        ];
+        let draws = if duplicate_draw {
+            "q 40 0 0 40 20 20 cm /Im1 Do Q q 20 0 0 20 70 20 cm /Im1 Do Q"
+        } else {
+            "q 40 0 0 40 20 20 cm /Im1 Do Q"
+        };
+        let content = format!("BT /F1 12 Tf 20 90 Td (PicTrim PDF text) Tj ET {draws}");
+        let mut objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 140 120] /Resources << /XObject << /Im1 5 0 R >> /Font << /F1 6 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            stream_object(b"", content.as_bytes()),
+            stream_object(
+                format!("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter {filter}").as_bytes(),
+                &image_data,
+            ),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        ];
+        let mut pdf = b"%PDF-1.7\n%\xD0\xD4\xC5\xD8\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.drain(..).enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            pdf.extend_from_slice(&object);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        fs::write(path, pdf).unwrap();
+    }
+
+    fn stream_object(dict: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut result = format!(
+            "<< {} /Length {} >>\nstream\n",
+            String::from_utf8_lossy(dict),
+            data.len()
+        )
+        .into_bytes();
+        result.extend_from_slice(data);
+        result.extend_from_slice(b"\nendstream");
+        result
     }
 
     fn test_settings(input_sources: Vec<String>, output_dir: &Path) -> BatchSettings {
