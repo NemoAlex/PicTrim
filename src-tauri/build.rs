@@ -275,9 +275,11 @@ fn main() {
 
     #[cfg(all(target_os = "windows", target_env = "msvc"))]
     {
-        // Restrict implicit dependent DLL loads to the application directory and System32.
-        // This prevents PATH-installed libvips DLLs from masking a broken portable bundle.
-        println!("cargo:rustc-link-arg=/DEPENDENTLOADFLAG:0xA00");
+        // Restrict release bundle DLL loads to the application directory and System32.
+        // Debug test binaries still need to load the CI-installed libvips DLLs from PATH.
+        if std::env::var("PROFILE").as_deref() == Ok("release") {
+            println!("cargo:rustc-link-arg=/DEPENDENTLOADFLAG:0xA00");
+        }
     }
 
     tauri_build::build()

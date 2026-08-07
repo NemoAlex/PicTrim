@@ -88,6 +88,10 @@ jobs:
           echo "VIPS_DIR=$($vipsDir.FullName)" >> $env:GITHUB_ENV
           echo "$($vipsDir.FullName)\bin" >> $env:GITHUB_PATH
 
+      - name: Stage Windows dependencies for tests
+        if: runner.os == 'Windows'
+        run: npm run stage-vips
+
       - name: Check frontend
         run: npm run check
 
