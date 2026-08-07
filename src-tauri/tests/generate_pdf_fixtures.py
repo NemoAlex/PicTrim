@@ -82,6 +82,15 @@ def encrypt(source: Path, name: str, user_password: str) -> None:
         writer.write(output)
 
 
+def srgb_profile() -> bytes:
+    path = ROOT / "srgb.icc"
+    if path.exists():
+        return path.read_bytes()
+    profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    path.write_bytes(profile)
+    return profile
+
+
 def main() -> None:
     ROOT.mkdir(parents=True, exist_ok=True)
     rgb = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0])
@@ -125,7 +134,7 @@ def main() -> None:
     )
     write_pdf("indexed.pdf", base_objects(indexed))
 
-    profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    profile = srgb_profile()
     icc_image = stream(
         b"/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace [/ICCBased 7 0 R] /BitsPerComponent 8 /Filter /FlateDecode",
         zlib.compress(rgb),
@@ -138,6 +147,13 @@ def main() -> None:
     smask_objects = base_objects(smask_image)
     smask_objects.append(flate_image(2, 2, b"/DeviceGray", bytes([0, 85, 170, 255])))
     write_pdf("smask.pdf", smask_objects)
+
+    shared_mask_content = b"BT /F1 12 Tf 20 90 Td (PicTrim PDF text) Tj ET q 40 0 0 40 20 20 cm /Im1 Do Q q 40 0 0 40 70 20 cm /Im2 Do Q"
+    shared_mask_objects = base_objects(smask_image, shared_mask_content)
+    shared_mask_objects[2] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 140 120] /Resources << /XObject << /Im1 5 0 R /Im2 8 0 R >> /Font << /F1 6 0 R >> >> /Contents 4 0 R >>"
+    shared_mask_objects.append(flate_image(2, 2, b"/DeviceGray", bytes([0, 85, 170, 255])))
+    shared_mask_objects.append(flate_image(2, 2, b"/DeviceRGB", rgb, b"/SMask 7 0 R"))
+    write_pdf("shared-smask.pdf", shared_mask_objects)
 
     duplicate_content = b"BT /F1 12 Tf 20 90 Td (PicTrim PDF text) Tj ET q 40 0 0 40 20 20 cm /Im1 Do Q q 20 0 0 20 70 20 cm /Im1 Do Q"
     write_pdf("repeated-reference.pdf", base_objects(flate_image(2, 2, b"/DeviceRGB", rgb), duplicate_content))

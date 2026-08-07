@@ -9,7 +9,7 @@ use rs_vips::{
     Vips, VipsImage,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::ErrorKind;
@@ -1368,11 +1368,12 @@ fn process_pdf(
     }
 
     if settings.output_format == OutputFormat::Keep {
+        let mut processed_masks = HashSet::new();
         for info in &infos {
             if cancel.load(Ordering::Relaxed) {
                 return Err("任务已取消".to_string());
             }
-            replace_pdf_image(&mut document, info, settings)?;
+            replace_pdf_image(&mut document, info, settings, &mut processed_masks)?;
         }
         let temp = temp_output_path(dst);
         if let Err(err) = document.save(&temp) {
@@ -1423,6 +1424,7 @@ fn replace_pdf_image(
     document: &mut pdf::Document,
     info: &pdf::ImageInfo,
     settings: &BatchSettings,
+    processed_masks: &mut HashSet<(i32, i32)>,
 ) -> Result<(), String> {
     let image = process_pdf_vips_image(load_pdf_vips_image(document, info)?, settings)?;
     let width = image.get_width() as u32;
@@ -1449,7 +1451,9 @@ fn replace_pdf_image(
         },
     )?;
 
-    if info.smask_object_id > 0 {
+    if info.smask_object_id > 0
+        && processed_masks.insert((info.smask_object_id, info.smask_generation))
+    {
         replace_pdf_mask(
             document,
             info.smask_object_id,
@@ -1457,7 +1461,9 @@ fn replace_pdf_image(
             settings,
         )?;
     }
-    if info.mask_object_id > 0 {
+    if info.mask_object_id > 0
+        && processed_masks.insert((info.mask_object_id, info.mask_generation))
+    {
         replace_pdf_mask(
             document,
             info.mask_object_id,
@@ -2906,6 +2912,7 @@ mod tests {
             ("repeated-reference.pdf", 1),
             ("nested-form.pdf", 1),
             ("inline-image.pdf", 1),
+            ("shared-smask.pdf", 2),
         ] {
             let mut document = pdf::Document::open(&fixtures.join(name)).unwrap();
             assert_eq!(document.images().unwrap().len(), expected, "{name}");
@@ -2932,6 +2939,7 @@ mod tests {
             "indexed.pdf",
             "icc-based.pdf",
             "smask.pdf",
+            "shared-smask.pdf",
             "repeated-reference.pdf",
             "nested-form.pdf",
             "inline-image.pdf",
