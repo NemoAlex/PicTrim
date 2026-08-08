@@ -4,38 +4,35 @@
 
 [English](../../README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Deutsch](README.de.md)
 
-PicTrim 是一个高性能的图片批处理工具。支持对图片进行批量缩放、压缩、旋转和格式转换。
+PicTrim 是一个开源免费的高性能图片批处理工具，支持批量缩放、压缩、旋转和格式转换。除了普通图片，也可以对 PDF 文件进行瘦身，对于图片量较大的 PDF 文件有非常明显的效果。
+
+## 界面截图
 
 ![PicTrim 界面截图](assets/pictrim-screenshot-zh-CN.png)
 
 ## 功能
 
-- 支持图片文件和目录混合输入，也可以直接拖拽。
+- 采用流式处理，轻松应对千万级数量文件。
 - 支持按最长边、指定宽高、固定裁剪等方式批量缩放。
-- 支持 JPG、PNG、WebP 输出，也可以保持原格式。
+- 支持输出为 JPG、PNG、WebP 格式，也可以选择保持原格式。
 - 支持质量、旋转、并发数、是否放大、是否跳过已有文件等常用选项。
-- 保留目录结构，实时显示进度、统计和失败列表。
-- 处理 PDF 页面内容中的内嵌图片，包括嵌套 Form XObject 和 inline image。
+- 支持 PDF 文件，可以选择保留原 PDF 结构，压缩其中的图片，也可以选择输出图片格式。
 
-## PDF 处理规则
+## PDF 文件处理
 
-- 选择“保持原格式”时仍输出 PDF，只替换页面主体图片，保留文字、矢量、链接、表单、页面尺寸和图片放置位置。
-- 选择 JPG、PNG 或 WebP 时，丢弃 PDF 其他内容，每个唯一图片对象输出一次，路径为 `<PDF文件名>/page-0001-image-0001.ext`。
-- 第一版支持 JPEG、JPX、Flate、LZW，以及 Gray、RGB、CMYK、Indexed、ICCBased、8-bit 样本和常见透明蒙版。
-- 不处理缩略图、附件、批注和表单外观图片；PDF 暂不进入预览。
-- 非空密码 PDF 会失败且不产生输出；空密码加密会保留。签名字段会保留，但处理后原签名失效并显示警告。
-- 遇到不支持或损坏的目标图片时整份 PDF 原子失败，不发布部分结果。
+- **输入**：可以直接添加 PDF 文件或包含 PDF 的文件夹，PicTrim 会处理 PDF 页面内容中的内嵌图片。
+- **选择保持原格式**：输出仍为 PDF，仅替换其中的图片，其他内容保持不变。
+- **选择输出为 JPG / PNG / WebP**：将 PDF 中的内嵌图片输出为独立文件，保存在 `<PDF文件名>/page-0001-image-0001.jpg` 这样的路径下。
 
 ## 性能
 
-- 本项目的核心目标是打造最高性能的图片批量处理工具。
 - 底层使用 Rust 和 libvips，处理速度快、内存占用低。
 - 使用流式任务队列 + 多线程并发处理，轻松处理千万级数量的图片。
 - 支持跳过已存在的输出文件，便于重复运行和增量处理。
 
 ## 使用
 
-1. 添加图片文件或文件夹。
+1. 添加图片文件、PDF 文件或文件夹。
 2. 选择输出目录。
 3. 设置尺寸、格式、质量和批处理选项。
 4. 点击“开始处理”。
@@ -67,7 +64,7 @@ cd src-tauri
 cargo check
 ```
 
-编译或链接 Rust 二进制文件需要在本机安装 libvips。
+编译或链接 Rust 二进制文件需要在本机安装 libvips。QPDF 12.3.2、zlib 1.3.1 和 IJG libjpeg 9f 已固定版本并采用静态构建，因此不需要另行安装 QPDF、CMake 或 libclang。
 
 macOS：
 
@@ -101,4 +98,4 @@ macOS 发布构建已使用 Developer ID 证书签名并通过 Apple 公证。Wi
 
 ## 许可证
 
-PicTrim 基于 [MIT License](../../LICENSE) 发布。
+PicTrim 基于 [MIT License](../../LICENSE) 发布。内置依赖的声明见 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)。

@@ -4,36 +4,35 @@
 
 [English](../../README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Deutsch](README.de.md)
 
-PicTrim est un outil performant de traitement d'images par lot. Il permet de redimensionner, compresser, faire pivoter et convertir des images en masse.
+PicTrim est un outil libre, gratuit et performant de traitement d’images par lot. Il permet de redimensionner, compresser, faire pivoter et convertir des images en masse. En plus des images classiques, il peut alléger les fichiers PDF, avec des résultats particulièrement visibles pour ceux qui contiennent beaucoup d’images.
+
+## Capture d’écran
 
 ![PicTrim screenshot](assets/pictrim-screenshot-fr.png)
 
 ## Fonctionnalités
 
-- Mélangez fichiers image et dossiers en entrée, ou glissez-les directement dans l'application.
+- Le traitement en continu permet de gérer facilement des dizaines de millions de fichiers.
 - Redimensionnez par côté le plus long, boîte englobante, recadrage fixe, largeur ou hauteur.
-- Exportez en JPG, PNG ou WebP, ou conservez le format d'origine.
-- Configurez la qualité, la rotation, la concurrence, l'agrandissement et la gestion des fichiers existants.
-- Conservez la structure des dossiers avec progression, statistiques, journaux et échecs en temps réel.
-- Traitez les images intégrées au contenu des pages PDF, y compris les Form XObjects imbriqués et les inline images.
+- Exportez au format JPG, PNG ou WebP, ou conservez le format d’origine.
+- Configurez les options courantes : qualité, rotation, nombre de tâches simultanées, agrandissement et omission des fichiers existants.
+- Prenez en charge les PDF en conservant leur structure d’origine pour compresser les images qu’ils contiennent, ou en exportant ces images dans un format graphique.
 
-## Comportement PDF
+## Traitement des fichiers PDF
 
-- « Conserver l’original » garde le conteneur PDF et remplace uniquement les images des pages. Texte, vecteurs, liens, formulaires, dimensions et placement sont conservés.
-- JPG / PNG / WebP ignore le reste du PDF et exporte chaque image unique une fois dans `<nom PDF>/page-0001-image-0001.ext`.
-- La première version prend en charge JPEG, JPX, Flate, LZW, Gray/RGB/CMYK/Indexed/ICCBased, les échantillons 8 bits et les masques courants. L’aperçu PDF n’est pas encore disponible.
-- Un PDF protégé par un mot de passe non vide échoue sans sortie. Les champs de signature sont conservés, mais la signature d’origine devient invalide.
+- **Entrée** : ajoutez directement des fichiers PDF ou des dossiers qui en contiennent. PicTrim traite les images intégrées au contenu des pages PDF.
+- **Conserver le format d’origine** : la sortie reste un PDF. Seules les images sont remplacées ; tout le reste du contenu reste inchangé.
+- **Exporter en JPG / PNG / WebP** : les images intégrées au PDF sont exportées dans des fichiers distincts, sous des chemins tels que `<nom PDF>/page-0001-image-0001.jpg`.
 
 ## Performances
 
-- PicTrim vise à être un outil de traitement d'images par lot extrêmement rapide.
 - Le cœur utilise Rust et libvips pour un débit élevé et une faible consommation mémoire.
-- Une file de tâches en streaming et un traitement multithread rendent les très grands ensembles d'images pratiques.
+- Une file de tâches en continu et un traitement multithread permettent de gérer facilement des dizaines de millions d’images.
 - Les fichiers de sortie existants peuvent être ignorés, ce qui facilite les exécutions répétées ou incrémentales.
 
 ## Utilisation
 
-1. Ajoutez des fichiers image ou des dossiers.
+1. Ajoutez des fichiers image, des fichiers PDF ou des dossiers.
 2. Choisissez un dossier de sortie.
 3. Réglez la taille, le format, la qualité et les options de lot.
 4. Cliquez sur « Start ».
@@ -65,7 +64,7 @@ cd src-tauri
 cargo check
 ```
 
-La compilation ou l'édition de liens du binaire Rust nécessite libvips installé localement.
+La compilation ou l’édition de liens du binaire Rust nécessite l’installation locale de libvips. QPDF 12.3.2, zlib 1.3.1 et IJG libjpeg 9f sont figés et compilés statiquement ; il n’est donc pas nécessaire d’installer séparément QPDF, CMake ou libclang.
 
 macOS :
 
@@ -99,4 +98,4 @@ Consultez [../release.md](../release.md) pour le processus de publication détai
 
 ## Licence
 
-PicTrim est publié sous la [MIT License](../../LICENSE).
+PicTrim est publié sous la [MIT License](../../LICENSE). Les mentions relatives aux dépendances intégrées figurent dans [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).

@@ -4,36 +4,35 @@
 
 [English](../../README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Deutsch](README.de.md)
 
-PicTrim ist ein leistungsstarkes Tool zur Stapelverarbeitung von Bildern. Es unterstützt das massenhafte Skalieren, Komprimieren, Drehen und Konvertieren von Bildern.
+PicTrim ist ein kostenloses, quelloffenes und leistungsstarkes Tool zur Stapelverarbeitung von Bildern. Es unterstützt das massenhafte Skalieren, Komprimieren, Drehen und Konvertieren. Neben normalen Bildern kann es auch PDF-Dateien verkleinern, was sich besonders bei PDFs mit vielen Bildern deutlich bemerkbar macht.
+
+## Bildschirmfoto
 
 ![PicTrim screenshot](assets/pictrim-screenshot-de.png)
 
 ## Funktionen
 
-- Bilddateien und Ordner können gemischt als Eingabe verwendet oder direkt in die App gezogen werden.
+- Durch Streaming-Verarbeitung lassen sich problemlos mehrere zehn Millionen Dateien bewältigen.
 - Stapelweise Skalierung nach längster Seite, Begrenzungsrahmen, festem Zuschnitt, Breite oder Höhe.
-- Export als JPG, PNG oder WebP oder Beibehaltung des Originalformats.
-- Einstellungen für Qualität, Drehung, Parallelität, Vergrößerung und vorhandene Dateien.
-- Ordnerstruktur bleibt erhalten, mit Live-Fortschritt, Statistiken, Protokollen und Fehlerliste.
-- Verarbeitet in PDF-Seiteninhalte eingebettete Bilder, einschließlich verschachtelter Form XObjects und Inline-Bilder.
+- Ausgabe als JPG, PNG oder WebP oder Beibehaltung des Originalformats.
+- Gängige Optionen für Qualität, Drehung, Parallelität, Vergrößerung und das Überspringen vorhandener Dateien.
+- Unterstützung für PDF-Dateien: Die ursprüngliche PDF-Struktur kann beibehalten und die enthaltenen Bilder können komprimiert oder in einem Bildformat ausgegeben werden.
 
-## PDF-Verhalten
+## Verarbeitung von PDF-Dateien
 
-- „Originalformat behalten“ behält den PDF-Container und ersetzt nur Seitenbilder. Text, Vektoren, Links, Formulare, Seitengröße und Platzierung bleiben erhalten.
-- JPG / PNG / WebP verwirft die übrigen PDF-Inhalte und exportiert jedes eindeutige Bild einmal nach `<PDF-Name>/page-0001-image-0001.ext`.
-- Unterstützt werden JPEG, JPX, Flate, LZW, Gray/RGB/CMYK/Indexed/ICCBased, 8-Bit-Samples und übliche Masken. Eine PDF-Vorschau ist noch nicht verfügbar.
-- PDFs mit nicht leerem Passwort schlagen ohne Ausgabe fehl. Signaturfelder bleiben erhalten, die ursprüngliche Signatur wird jedoch ungültig.
+- **Eingabe**: PDF-Dateien oder Ordner mit PDF-Dateien können direkt hinzugefügt werden. PicTrim verarbeitet die in den Seiteninhalten eingebetteten Bilder.
+- **Originalformat beibehalten**: Die Ausgabe bleibt eine PDF-Datei. Nur die Bilder werden ersetzt; alle übrigen Inhalte bleiben unverändert.
+- **Als JPG / PNG / WebP ausgeben**: Eingebettete PDF-Bilder werden als einzelne Dateien unter Pfaden wie `<PDF-Name>/page-0001-image-0001.jpg` ausgegeben.
 
 ## Leistung
 
-- PicTrim ist als extrem schnelles Tool zur Bild-Stapelverarbeitung ausgelegt.
 - Der Kern nutzt Rust und libvips für hohen Durchsatz und geringen Speicherverbrauch.
-- Eine Streaming-Aufgabenwarteschlange und Multithreading machen sehr große Bildmengen praktikabel.
+- Eine Streaming-Aufgabenwarteschlange und Multithreading ermöglichen die problemlose Verarbeitung von mehreren zehn Millionen Bildern.
 - Bereits vorhandene Ausgabedateien können übersprungen werden, praktisch für wiederholte oder inkrementelle Läufe.
 
 ## Verwendung
 
-1. Bilddateien oder Ordner hinzufügen.
+1. Bilddateien, PDF-Dateien oder Ordner hinzufügen.
 2. Ausgabeordner auswählen.
 3. Größe, Format, Qualität und Stapeloptionen einstellen.
 4. Auf „Start“ klicken.
@@ -65,7 +64,7 @@ cd src-tauri
 cargo check
 ```
 
-Zum Bauen oder Linken des Rust-Binaries muss libvips lokal installiert sein.
+Zum Bauen oder Linken des Rust-Binaries muss libvips lokal installiert sein. QPDF 12.3.2, zlib 1.3.1 und IJG libjpeg 9f sind auf feste Versionen gesetzt und werden statisch gebaut; QPDF, CMake und libclang müssen daher nicht separat installiert werden.
 
 macOS:
 
@@ -99,4 +98,4 @@ Details zum Veröffentlichungsablauf finden Sie in [../release.md](../release.md
 
 ## Lizenz
 
-PicTrim wird unter der [MIT License](../../LICENSE) veröffentlicht.
+PicTrim wird unter der [MIT License](../../LICENSE) veröffentlicht. Hinweise zu den enthaltenen Abhängigkeiten stehen in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).

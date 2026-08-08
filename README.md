@@ -4,7 +4,7 @@
 
 [English](README.md) | [中文](docs/readme/README.zh-CN.md) | [日本語](docs/readme/README.ja.md) | [한국어](docs/readme/README.ko.md) | [Français](docs/readme/README.fr.md) | [Deutsch](docs/readme/README.de.md)
 
-PicTrim is a high-performance batch image and PDF-embedded-image processing tool for resizing, compressing, rotating, and converting images.
+PicTrim is a free and open-source, high-performance batch image processor for resizing, compressing, rotating, and converting images. In addition to regular images, it can slim down PDF files, with especially noticeable results for PDFs that contain many images.
 
 ## Screenshot
 
@@ -12,32 +12,27 @@ PicTrim is a high-performance batch image and PDF-embedded-image processing tool
 
 ## Features
 
-- Mix image files and folders as input, or drag them directly into the app.
+- Streaming processing makes it easy to handle tens of millions of files.
 - Batch resize by longest side, bounding box, fixed crop, width, or height.
-- Export JPG, PNG, and WebP, or keep the original format.
-- Configure quality, rotation, concurrency, upscaling, existing-file handling, and non-image file handling.
-- Preserve folder structure while showing live progress, stats, logs, and failures.
-- Process images embedded in PDF page content, including nested Form XObjects and inline images.
+- Export as JPG, PNG, or WebP, or keep the original format.
+- Configure common options such as quality, rotation, concurrency, upscaling, and whether to skip existing files.
+- Process PDF files by either preserving the original PDF structure and compressing its images, or exporting the embedded images in an image format.
 
-## PDF behavior
+## PDF processing
 
-- **Keep original** keeps the PDF container and page layout, replacing only page-content images. Text, vectors, links, forms, page sizes, and placement matrices are retained.
-- **JPG / PNG / WebP** discards the rest of the PDF and exports each unique embedded image once to `<PDF name>/page-0001-image-0001.ext`.
-- Supported in the first release: JPEG, JPX, Flate, and LZW streams; Gray, RGB, CMYK, Indexed, and ICCBased color spaces; 8-bit samples; soft masks and common image masks.
-- Thumbnails, attachments, annotations, and form appearance images are not processed. PDF files are not shown in Preview yet.
-- PDFs that require a non-empty password fail without output. Empty-password encryption is retained. Editing a signed PDF retains its signature field but invalidates the original signature and emits a warning.
-- An unsupported or damaged target image fails the whole PDF. Temporary files/directories prevent partial results from being published.
+- **Input**: Add PDF files directly, or add folders that contain PDF files. PicTrim processes the images embedded in PDF page content.
+- **Keep original**: The output remains a PDF. Only its images are replaced; all other content remains unchanged.
+- **Export as JPG / PNG / WebP**: Embedded PDF images are exported as individual files under paths such as `<PDF name>/page-0001-image-0001.jpg`.
 
 ## Performance
 
-- PicTrim is built to be an extremely fast batch image processing tool.
 - The core uses Rust and libvips for high throughput and low memory usage.
-- A streaming task queue plus multithreaded processing makes very large image sets practical.
+- A streaming task queue plus multithreaded processing makes it easy to handle tens of millions of images.
 - Existing output files can be skipped, which is useful for repeated or incremental runs.
 
 ## Usage
 
-1. Add image files or folders.
+1. Add image files, PDF files, or folders.
 2. Choose an output folder.
 3. Set the size, format, quality, and batch options.
 4. Click "Start".
